@@ -172,7 +172,7 @@ class NBFCFanController(FanController):
         return hp_like
 
     def _try_profile(self, profile: str, requested: int) -> tuple[bool, str]:
-        ok, out = self._run(["config", "--apply", profile])
+        ok, out = self._run(["config", "--set", profile])
         if not ok:
             return False, out
         ok, out = self._run(["set", "--fan", "0", "--speed", str(requested)], timeout=7)
@@ -237,19 +237,22 @@ class NBFCFanController(FanController):
                     "NBFC service no llega a RUNNING. Reinstala NBFC o reinicia el equipo.",
                 )
 
-            ok, out = self._run(["config", "--apply", self.profile])
+            if self._service_process_count() > 1:
+                if not self._hard_reset_service() or self._service_process_count() > 1:
+                    return FanApplyResult(
+                        False,
+                        "NBFC detecta multiples procesos de servicio. Reinicia Windows para limpiar el servicio.",
+                    )
+
+            ok, out = self._run(["config", "--set", self.profile])
             if (not ok) and ("service is unavailable" in out.lower()):
                 if self._hard_reset_service():
-                    ok, out = self._run(["config", "--apply", self.profile])
+                    ok, out = self._run(["config", "--set", self.profile])
             if not ok:
                 if self._autodiscover_profile(requested):
-                    ok, out = self._run(["config", "--apply", self.profile])
+                    ok, out = self._run(["config", "--set", self.profile])
                 if not ok:
                     return FanApplyResult(False, f"NBFC no pudo aplicar perfil '{self.profile}': {out or 'sin detalle'}")
-
-            ok, out = self._run(["start", "--enabled"], timeout=7)
-            if not ok:
-                return FanApplyResult(False, f"NBFC no pudo iniciar servicio: {out or 'sin detalle'}")
 
             ok, out = self._run(["set", "--fan", "0", "--speed", str(requested)], timeout=7)
             if not ok:

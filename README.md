@@ -88,6 +88,7 @@ Importante: se copia la carpeta completa de NBFC (no solo `nbfc.exe`) para evita
 
 La app ejecuta comandos de hardware en modo silencioso (`CREATE_NO_WINDOW`) para evitar popups de PowerShell/cmd.
 Tambien aplica recuperacion inteligente de `NbfcService` (sin reinicios agresivos y con reset duro solo cuando detecta estado roto).
+Para mejorar estabilidad, la app usa `config --set` + `set --speed` y evita `nbfc start` en cada aplicacion.
 
 ## Versionado
 

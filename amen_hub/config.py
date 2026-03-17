@@ -71,6 +71,16 @@ class ConfigManager:
         safe["nbfc_profile"] = str(safe["nbfc_profile"])
         safe["nbfc_executable"] = str(safe["nbfc_executable"])
         safe["nbfc_autodiscover_profile"] = bool(safe["nbfc_autodiscover_profile"])
+
+        profile_aliases = {
+            "notebook pc 15": "HP OMEN Notebook PC 15",
+            "omen notebook pc 15": "HP OMEN Notebook PC 15",
+            "hp omen notebook pc 15": "HP OMEN Notebook PC 15",
+        }
+        key = safe["nbfc_profile"].strip().lower()
+        if key in profile_aliases:
+            safe["nbfc_profile"] = profile_aliases[key]
+
         return safe
 
     def save(self) -> None:
