@@ -3,11 +3,13 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 import time
 from dataclasses import dataclass
 from threading import Lock
 
 from amen_hub.config import AppConfig
+from amen_hub.paths import get_base_path
 
 
 @dataclass
@@ -52,8 +54,9 @@ class MockHPVictusFanController(FanController):
 class NBFCFanController(FanController):
     backend_name = "nbfc"
 
-    def __init__(self, executable: str = "nbfc.exe") -> None:
+    def __init__(self, executable: str = "nbfc.exe", profile: str = "HP OMEN Notebook PC 15") -> None:
         self.executable = executable
+        self.profile = profile
         self._lock = Lock()
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
@@ -61,11 +64,34 @@ class NBFCFanController(FanController):
         gpu = int(min(max(gpu_percent, 0), 100))
 
         with self._lock:
-            for fan_index, value in ((0, cpu), (1, gpu)):
-                cmd = [self.executable, "set", "-f", str(fan_index), "-s", str(value)]
+            profile_cmd = [self.executable, "config", "--apply", self.profile]
+            profile_proc = subprocess.run(profile_cmd, capture_output=True, text=True, timeout=10, check=False)
+            if profile_proc.returncode != 0:
+                stderr = profile_proc.stderr.strip() or profile_proc.stdout.strip() or "sin detalle"
+                return FanApplyResult(False, f"NBFC no pudo aplicar perfil '{self.profile}': {stderr}")
+
+            start_cmd = [self.executable, "start", "--enabled"]
+            start_proc = subprocess.run(start_cmd, capture_output=True, text=True, timeout=7, check=False)
+            if start_proc.returncode != 0:
+                stderr = start_proc.stderr.strip() or start_proc.stdout.strip() or "sin detalle"
+                return FanApplyResult(False, f"NBFC no pudo iniciar servicio: {stderr}")
+
+            # Victus/OMEN usually exposes one controllable fan channel to NBFC.
+            fan_targets = ((0, cpu), (0, gpu))
+
+            for fan_index, value in fan_targets:
+                auto_cmd = [self.executable, "set", "--fan", str(fan_index), "--auto"]
+                subprocess.run(auto_cmd, capture_output=True, text=True, timeout=7, check=False)
+
+                cmd = [self.executable, "set", "--fan", str(fan_index), "--speed", str(value)]
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7, check=False)
                 if proc.returncode != 0:
                     stderr = proc.stderr.strip() or proc.stdout.strip() or "sin detalle"
+                    if "232" in stderr:
+                        return FanApplyResult(
+                            False,
+                            "NBFC reporta canalizacion rota (232). Ejecuta la app como Administrador y valida perfil NBFC.",
+                        )
                     return FanApplyResult(False, f"NBFC fallo fan {fan_index}: {stderr}")
 
         return FanApplyResult(True, f"Velocidades aplicadas por NBFC: CPU {cpu}% | GPU {gpu}%")
@@ -103,13 +129,45 @@ def build_fan_controller(config: AppConfig) -> FanController:
         return MockHPVictusFanController()
 
     if config.fan_backend == "nbfc":
-        return NBFCFanController()
+        return NBFCFanController(profile=config.nbfc_profile)
 
     if config.fan_backend == "command":
         return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
 
-    nbfc_path = shutil.which("nbfc.exe")
+    nbfc_path = find_nbfc_executable(config.nbfc_executable)
     if nbfc_path:
-        return NBFCFanController(nbfc_path)
+        return NBFCFanController(nbfc_path, profile=config.nbfc_profile)
 
     return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
+
+
+def find_nbfc_executable(config_value: str = "auto") -> str | None:
+    if config_value and config_value.strip().lower() != "auto":
+        custom = Path(config_value.strip())
+        if custom.exists():
+            return str(custom)
+
+    base = get_base_path()
+    local_candidates = [
+        base / "nbfc.exe",
+        base / "tools" / "nbfc" / "nbfc.exe",
+        base / "NoteBook FanControl" / "nbfc.exe",
+    ]
+    for candidate in local_candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    from_path = shutil.which("nbfc.exe")
+    if from_path:
+        return from_path
+
+    candidates = [
+        Path("C:/Program Files (x86)/NoteBook FanControl/nbfc.exe"),
+        Path("C:/Program Files/NoteBook FanControl/nbfc.exe"),
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    return None

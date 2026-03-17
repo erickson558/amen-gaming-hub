@@ -9,5 +9,7 @@
   "fan_backend": "auto",
   "fan_command_cpu": "",
   "fan_command_gpu": "",
-  "telemetry_interval_seconds": 2
+  "telemetry_interval_seconds": 2,
+  "nbfc_profile": "HP OMEN Notebook PC 15",
+  "nbfc_executable": "auto"
 }

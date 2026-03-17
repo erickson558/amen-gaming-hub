@@ -21,6 +21,8 @@ class AppConfig:
     fan_command_cpu: str = ""
     fan_command_gpu: str = ""
     telemetry_interval_seconds: int = 2
+    nbfc_profile: str = "HP OMEN Notebook PC 15"
+    nbfc_executable: str = "auto"
 
 
 class ConfigManager:
@@ -65,6 +67,8 @@ class ConfigManager:
             safe["fan_backend"] = "auto"
         safe["fan_command_cpu"] = str(safe["fan_command_cpu"])
         safe["fan_command_gpu"] = str(safe["fan_command_gpu"])
+        safe["nbfc_profile"] = str(safe["nbfc_profile"])
+        safe["nbfc_executable"] = str(safe["nbfc_executable"])
         return safe
 
     def save(self) -> None:

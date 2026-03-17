@@ -57,6 +57,24 @@ Coloca tu icono como `app.ico` en la raiz del proyecto y ejecuta:
 
 El ejecutable generado quedara en la misma carpeta del proyecto.
 
+## Modo portable para otros PCs (misma carpeta del EXE)
+
+La app ahora busca `nbfc.exe` en este orden:
+
+1. Ruta configurada en `config.json` (`nbfc_executable`) si no es `auto`.
+2. Misma carpeta del `.exe` (`./nbfc.exe`).
+3. `./tools/nbfc/nbfc.exe`.
+4. `./NoteBook FanControl/nbfc.exe`.
+5. PATH del sistema.
+
+Para preparar la carpeta portable:
+
+```powershell
+.\install_nbfc_local.ps1
+```
+
+Eso deja NBFC dentro de `tools/nbfc/` junto a tu app para que funcione al moverla a otro equipo.
+
 ## Versionado
 
 Version inicial: `0.0.1`

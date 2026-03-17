@@ -80,6 +80,7 @@ class MainWindow:
         self.autoclose_seconds_var = tk.IntVar(value=cfg.autoclose_seconds)
         self.password_var = tk.StringVar(value=cfg.app_password)
         self.backend_var = tk.StringVar(value=cfg.fan_backend)
+        self.nbfc_profile_var = tk.StringVar(value=cfg.nbfc_profile)
         self.show_password_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Listo")
         self.cpu_temp_var = tk.StringVar(value="--.- C")
@@ -194,6 +195,10 @@ class MainWindow:
         self.backend_combo.grid(row=0, column=2, sticky="w", padx=(0, 14), pady=6)
         self.backend_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_backend_changed())
 
+        ttk.Label(options, text="Perfil NBFC:").grid(row=0, column=3, sticky="e", padx=(10, 4))
+        self.nbfc_profile_entry = ttk.Entry(options, textvariable=self.nbfc_profile_var, width=26)
+        self.nbfc_profile_entry.grid(row=0, column=4, sticky="w", padx=(0, 14), pady=6)
+
         ttk.Label(options, text="Password (opcional):").grid(row=2, column=0, sticky="w", padx=10, pady=(6, 10))
         self.password_entry = ttk.Entry(options, textvariable=self.password_var, show="*")
         self.password_entry.grid(row=2, column=1, sticky="ew", padx=(10, 4), pady=(6, 10))
@@ -201,6 +206,7 @@ class MainWindow:
         self.toggle_pass_button.grid(row=2, column=2, sticky="w", padx=(0, 10), pady=(6, 10))
 
         options.columnconfigure(1, weight=1)
+        options.columnconfigure(4, weight=1)
 
         actions = ttk.Frame(container, style="Root.TFrame")
         actions.pack(fill="x", pady=(0, 8))
@@ -234,6 +240,7 @@ class MainWindow:
         self.gpu_var.trace_add("write", lambda *_: self._on_live_change())
         self.autoclose_seconds_var.trace_add("write", lambda *_: self._on_live_change())
         self.password_var.trace_add("write", lambda *_: self._on_live_change())
+        self.nbfc_profile_var.trace_add("write", lambda *_: self._on_live_change())
 
     def _load_state(self) -> None:
         self._update_value_labels()
@@ -275,6 +282,7 @@ class MainWindow:
             autoclose_seconds=autoclose_secs,
             app_password=self.password_var.get(),
             fan_backend=self.backend_var.get(),
+            nbfc_profile=self.nbfc_profile_var.get(),
             window_geometry=self.root.geometry(),
         )
 
