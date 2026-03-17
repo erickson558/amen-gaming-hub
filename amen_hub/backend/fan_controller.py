@@ -56,14 +56,28 @@ class MockHPVictusFanController(FanController):
 class NBFCFanController(FanController):
     backend_name = "nbfc"
 
-    def __init__(self, executable: str = "nbfc.exe", profile: str = "HP OMEN Notebook PC 15") -> None:
+    def __init__(
+        self,
+        executable: str = "nbfc.exe",
+        profile: str = "HP OMEN Notebook PC 15",
+        autodiscover_profile: bool = True,
+    ) -> None:
         self.executable = executable
         self.profile = profile
+        self.autodiscover_profile = autodiscover_profile
         self._lock = Lock()
+        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def _run(self, args: list[str], timeout: int = 10) -> tuple[bool, str]:
         cmd = [self.executable] + args
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=self._no_window_flag,
+        )
         output = (proc.stdout or "").strip()
         error = (proc.stderr or "").strip()
         combined = "\n".join([line for line in (output, error) if line]).strip()
@@ -82,6 +96,74 @@ class NBFCFanController(FanController):
         )
         ok = proc.returncode == 0 and not has_error_text
         return ok, combined
+
+    def _run_system(self, cmd: list[str], timeout: int = 12) -> tuple[int, str]:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                creationflags=self._no_window_flag,
+            )
+            out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            return proc.returncode, out
+        except (OSError, subprocess.SubprocessError):
+            return 1, "system command failed"
+
+    def _is_service_running(self) -> bool:
+        code, out = self._run_system(["sc", "query", "NbfcService"], timeout=8)
+        if code != 0:
+            return False
+        return "RUNNING" in out.upper()
+
+    def _wait_service_running(self, timeout_s: float = 8.0) -> bool:
+        end = time.time() + timeout_s
+        while time.time() < end:
+            if self._is_service_running():
+                return True
+            time.sleep(0.35)
+        return False
+
+    def _recover_service(self) -> bool:
+        self._run_system(["sc", "stop", "NbfcService"], timeout=10)
+        self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=6)
+        self._run_system(["sc", "start", "NbfcService"], timeout=12)
+        return self._wait_service_running(timeout_s=10.0)
+
+    def _candidate_profiles(self) -> list[str]:
+        ok, out = self._run(["config", "--list"], timeout=12)
+        if not ok or not out:
+            return []
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        hp_like = [ln for ln in lines if ln.lower().startswith("hp ")]
+        victus_omen = [ln for ln in hp_like if ("omen" in ln.lower() or "victus" in ln.lower())]
+        if victus_omen:
+            return victus_omen
+        return hp_like
+
+    def _try_profile(self, profile: str, requested: int) -> tuple[bool, str]:
+        ok, out = self._run(["config", "--apply", profile])
+        if not ok:
+            return False, out
+        ok, out = self._run(["set", "--fan", "0", "--speed", str(requested)], timeout=7)
+        if not ok:
+            return False, out
+        auto_enabled, _current, target = self._read_status()
+        if target is None or auto_enabled == 1.0 or target <= 0:
+            return False, "target no aplicable"
+        self.profile = profile
+        return True, "ok"
+
+    def _autodiscover_profile(self, requested: int) -> bool:
+        if not self.autodiscover_profile:
+            return False
+        for profile in self._candidate_profiles():
+            ok, _ = self._try_profile(profile, requested)
+            if ok:
+                return True
+        return False
 
     def _read_status(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
         ok, out = self._run(["status", "--fan", "0"])
@@ -118,12 +200,21 @@ class NBFCFanController(FanController):
 
         cpu = int(min(max(cpu_percent, 0), 100))
         gpu = int(min(max(gpu_percent, 0), 100))
-        requested = gpu
+        requested = max(cpu, gpu)
 
         with self._lock:
+            if not self._recover_service():
+                return FanApplyResult(
+                    False,
+                    "NBFC service no llega a RUNNING. Reinstala NBFC o reinicia el equipo.",
+                )
+
             ok, out = self._run(["config", "--apply", self.profile])
             if not ok:
-                return FanApplyResult(False, f"NBFC no pudo aplicar perfil '{self.profile}': {out or 'sin detalle'}")
+                if self._autodiscover_profile(requested):
+                    ok, out = self._run(["config", "--apply", self.profile])
+                if not ok:
+                    return FanApplyResult(False, f"NBFC no pudo aplicar perfil '{self.profile}': {out or 'sin detalle'}")
 
             ok, out = self._run(["start", "--enabled"], timeout=7)
             if not ok:
@@ -146,6 +237,13 @@ class NBFCFanController(FanController):
                 )
 
             if auto_enabled == 1.0 or target <= 0:
+                if self._autodiscover_profile(requested):
+                    auto_enabled, current, target = self._read_status()
+                    if target is not None and auto_enabled != 1.0 and target > 0:
+                        return FanApplyResult(
+                            True,
+                            f"Perfil auto-detectado: {self.profile} | target {target:.1f}% | actual {current or 0:.1f}%",
+                        )
                 return FanApplyResult(
                     False,
                     "NBFC mantiene auto-control o target en 0. Perfil no compatible con este Victus.",
@@ -164,6 +262,7 @@ class CommandTemplateFanController(FanController):
         self._cpu_template = cpu_template.strip()
         self._gpu_template = gpu_template.strip()
         self._lock = Lock()
+        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         if not self._cpu_template or not self._gpu_template:
@@ -176,7 +275,14 @@ class CommandTemplateFanController(FanController):
 
         with self._lock:
             for cmd in (cpu_cmd, gpu_cmd):
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=False)
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                    creationflags=self._no_window_flag,
+                )
                 if proc.returncode != 0:
                     stderr = proc.stderr.strip() or proc.stdout.strip() or "sin detalle"
                     return FanApplyResult(False, f"Comando fallo: {stderr}")
@@ -191,7 +297,11 @@ def build_fan_controller(config: AppConfig) -> FanController:
     if config.fan_backend == "nbfc":
         nbfc_path = find_nbfc_executable(config.nbfc_executable)
         if nbfc_path:
-            return NBFCFanController(nbfc_path, profile=config.nbfc_profile)
+            return NBFCFanController(
+                nbfc_path,
+                profile=config.nbfc_profile,
+                autodiscover_profile=config.nbfc_autodiscover_profile,
+            )
         return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
 
     if config.fan_backend == "command":
@@ -199,7 +309,11 @@ def build_fan_controller(config: AppConfig) -> FanController:
 
     nbfc_path = find_nbfc_executable(config.nbfc_executable)
     if nbfc_path:
-        return NBFCFanController(nbfc_path, profile=config.nbfc_profile)
+        return NBFCFanController(
+            nbfc_path,
+            profile=config.nbfc_profile,
+            autodiscover_profile=config.nbfc_autodiscover_profile,
+        )
 
     return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
 

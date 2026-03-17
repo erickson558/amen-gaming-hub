@@ -15,6 +15,7 @@ class TemperatureReading:
 class TemperatureService:
     def __init__(self, nbfc_executable: str | None = None) -> None:
         self.nbfc_executable = nbfc_executable
+        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def read(self) -> TemperatureReading:
         return TemperatureReading(cpu_c=self._read_cpu_temp(), gpu_c=self._read_gpu_temp())
@@ -26,7 +27,14 @@ class TemperatureService:
             "--format=csv,noheader,nounits",
         ]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=4, check=False)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=4,
+                check=False,
+                creationflags=self._no_window_flag,
+            )
             if proc.returncode != 0:
                 return None
             value = proc.stdout.strip().splitlines()[0].strip()
@@ -70,7 +78,14 @@ class TemperatureService:
             *cmd,
         ]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+                creationflags=self._no_window_flag,
+            )
             if proc.returncode == 0:
                 match = re.search(r"([0-9]+(?:\.[0-9]+)?)", proc.stdout)
                 if match:

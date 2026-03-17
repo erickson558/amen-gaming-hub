@@ -1,6 +1,6 @@
 {
-  "cpu_fan_percent": 67,
-  "gpu_fan_percent": 75,
+  "cpu_fan_percent": 100,
+  "gpu_fan_percent": 100,
   "autostart_process": false,
   "autoclose_enabled": false,
   "autoclose_seconds": 60,
@@ -11,5 +11,6 @@
   "fan_command_gpu": "",
   "telemetry_interval_seconds": 2,
   "nbfc_profile": "HP OMEN Notebook PC 15",
-  "nbfc_executable": "auto"
+  "nbfc_executable": "auto",
+  "nbfc_autodiscover_profile": true
 }

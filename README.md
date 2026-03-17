@@ -78,6 +78,8 @@ Para preparar la carpeta portable:
 
 Eso deja NBFC dentro de `tools/nbfc/` junto a tu app para que funcione al moverla a otro equipo.
 
+La app ejecuta comandos de hardware en modo silencioso (`CREATE_NO_WINDOW`) para evitar popups de PowerShell/cmd.
+
 ## Versionado
 
 Version inicial: `0.0.1`
@@ -104,6 +106,7 @@ La app intenta control real por backend segun `config.json`:
 - `fan_backend: nbfc`: fuerza el uso de NBFC (`nbfc.exe set -f 0/1 -s {valor}`).
 - `fan_backend: command`: ejecuta `fan_command_cpu` y `fan_command_gpu` con placeholder `{value}`.
 - `fan_backend: mock`: modo simulacion.
+- `nbfc_autodiscover_profile: true`: intenta auto-detectar perfil HP compatible si el perfil actual no aplica fan speed.
 
 En algunos equipos HP Victus, el control de ventilador no esta expuesto oficialmente por API publica; en esos casos se recomienda `nbfc` o comandos propios del controlador que ya uses.
 

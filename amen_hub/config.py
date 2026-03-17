@@ -23,6 +23,7 @@ class AppConfig:
     telemetry_interval_seconds: int = 2
     nbfc_profile: str = "HP OMEN Notebook PC 15"
     nbfc_executable: str = "auto"
+    nbfc_autodiscover_profile: bool = True
 
 
 class ConfigManager:
@@ -69,6 +70,7 @@ class ConfigManager:
         safe["fan_command_gpu"] = str(safe["fan_command_gpu"])
         safe["nbfc_profile"] = str(safe["nbfc_profile"])
         safe["nbfc_executable"] = str(safe["nbfc_executable"])
+        safe["nbfc_autodiscover_profile"] = bool(safe["nbfc_autodiscover_profile"])
         return safe
 
     def save(self) -> None:
