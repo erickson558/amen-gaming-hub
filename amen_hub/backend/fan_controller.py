@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import re
 from pathlib import Path
 import time
 import ctypes
@@ -324,6 +325,10 @@ def find_nbfc_executable(config_value: str = "auto") -> str | None:
         if custom.exists():
             return str(custom)
 
+    service_path = _find_nbfc_cli_from_service()
+    if service_path:
+        return service_path
+
     base = get_base_path()
     local_candidates = [
         base / "nbfc.exe",
@@ -348,6 +353,36 @@ def find_nbfc_executable(config_value: str = "auto") -> str | None:
             return str(candidate)
 
     return None
+
+
+def _find_nbfc_cli_from_service() -> str | None:
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.run(
+            ["sc", "qc", "NbfcService"],
+            capture_output=True,
+            text=True,
+            timeout=6,
+            check=False,
+            creationflags=no_window,
+        )
+        if proc.returncode != 0:
+            return None
+
+        match = re.search(r"BINARY_PATH_NAME\s*:\s*\"?([^\r\n\"]+)\"?", proc.stdout)
+        if not match:
+            return None
+
+        service_exe = Path(match.group(1).strip())
+        if not service_exe.exists():
+            return None
+
+        cli = service_exe.parent / "nbfc.exe"
+        if cli.exists():
+            return str(cli)
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def is_running_as_admin() -> bool:

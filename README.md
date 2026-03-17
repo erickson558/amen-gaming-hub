@@ -71,10 +71,11 @@ El EXE se genera con requerimiento UAC (`--uac-admin`) para permisos de hardware
 La app ahora busca `nbfc.exe` en este orden:
 
 1. Ruta configurada en `config.json` (`nbfc_executable`) si no es `auto`.
-2. Misma carpeta del `.exe` (`./nbfc.exe`).
-3. `./tools/nbfc/nbfc.exe`.
-4. `./NoteBook FanControl/nbfc.exe`.
-5. PATH del sistema.
+2. Binario asociado al servicio instalado `NbfcService` (ruta oficial de NBFC).
+3. Misma carpeta del `.exe` (`./nbfc.exe`).
+4. `./tools/nbfc/nbfc.exe`.
+5. `./NoteBook FanControl/nbfc.exe`.
+6. PATH del sistema.
 
 Para preparar la carpeta portable:
 
@@ -83,6 +84,7 @@ Para preparar la carpeta portable:
 ```
 
 Eso deja NBFC dentro de `tools/nbfc/` junto a tu app para que funcione al moverla a otro equipo.
+Importante: se copia la carpeta completa de NBFC (no solo `nbfc.exe`) para evitar errores de servicio/pipe.
 
 La app ejecuta comandos de hardware en modo silencioso (`CREATE_NO_WINDOW`) para evitar popups de PowerShell/cmd.
 

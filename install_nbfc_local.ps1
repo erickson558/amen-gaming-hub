@@ -12,13 +12,14 @@ if (Test-Path $exePath) {
 }
 
 $globalCandidates = @(
-    'C:\Program Files (x86)\NoteBook FanControl\nbfc.exe',
-    'C:\Program Files\NoteBook FanControl\nbfc.exe'
+    'C:\Program Files (x86)\NoteBook FanControl',
+    'C:\Program Files\NoteBook FanControl'
 )
 
 foreach ($candidate in $globalCandidates) {
-    if (Test-Path $candidate) {
-        Copy-Item $candidate $exePath -Force
+    $candidateExe = Join-Path $candidate 'nbfc.exe'
+    if (Test-Path $candidateExe) {
+        Copy-Item (Join-Path $candidate '*') $targetDir -Recurse -Force
         Write-Host "NBFC copiado a carpeta local: $exePath"
         exit 0
     }
@@ -28,8 +29,9 @@ Write-Host 'NBFC no está instalado globalmente. Instalando con winget...'
 winget install --id Hirschmann.NotebookFanControl --accept-source-agreements --accept-package-agreements --silent
 
 foreach ($candidate in $globalCandidates) {
-    if (Test-Path $candidate) {
-        Copy-Item $candidate $exePath -Force
+    $candidateExe = Join-Path $candidate 'nbfc.exe'
+    if (Test-Path $candidateExe) {
+        Copy-Item (Join-Path $candidate '*') $targetDir -Recurse -Force
         Write-Host "NBFC instalado y copiado localmente: $exePath"
         Write-Host 'Opcional: en config.json fija "nbfc_executable": "tools/nbfc/nbfc.exe"'
         exit 0
