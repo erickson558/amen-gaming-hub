@@ -219,6 +219,7 @@ class NBFCFanController(FanController):
 
         return auto_value, current_value, target_value
 
+
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         if not is_running_as_admin():
             return FanApplyResult(
@@ -238,10 +239,12 @@ class NBFCFanController(FanController):
                 )
 
             if self._service_process_count() > 1:
-                if not self._hard_reset_service() or self._service_process_count() > 1:
+                # Intentar reparación automática
+                repaired = self.repair_nbfc_service()
+                if not repaired or self._service_process_count() > 1:
                     return FanApplyResult(
                         False,
-                        "NBFC detecta multiples procesos de servicio. Reinicia Windows para limpiar el servicio.",
+                        "NBFC detecta multiples procesos de servicio. Reparación automática fallida. Reinicia Windows para limpiar el servicio.",
                     )
 
             ok, out = self._run(["config", "--set", self.profile])
@@ -287,6 +290,24 @@ class NBFCFanController(FanController):
                 True,
                 f"Velocidad aplicada por NBFC: solicitado {requested}% | target {target:.1f}% | actual {current or 0:.1f}%",
             )
+
+    def repair_nbfc_service(self) -> bool:
+        """
+        Intenta limpiar procesos duplicados de NBFC y reiniciar el servicio.
+        Devuelve True si la reparación fue exitosa.
+        """
+        try:
+            # Detener servicio
+            self._run_system(["sc", "stop", "NbfcService"], timeout=10)
+            time.sleep(0.4)
+            # Eliminar todos los procesos NbfcService.exe
+            self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=6)
+            time.sleep(0.4)
+            # Iniciar servicio
+            self._run_system(["sc", "start", "NbfcService"], timeout=12)
+            return self._wait_service_running(timeout_s=10.0)
+        except Exception:
+            return False
 
 
 class CommandTemplateFanController(FanController):

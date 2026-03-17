@@ -219,11 +219,47 @@ class MainWindow:
         actions = ttk.Frame(container, style="Root.TFrame")
         actions.pack(fill="x", pady=(0, 8))
 
+
         self.apply_button = ttk.Button(actions, text="Aplicar", command=self._apply_async, style="Action.TButton")
         self.apply_button.pack(side="left")
 
+        self.repair_button = ttk.Button(actions, text="Reparar NBFC", command=self._repair_nbfc, style="Accent.Horizontal.TScale")
+        self.repair_button.pack(side="left", padx=(8, 0))
+
         self.exit_button = ttk.Button(actions, text="Salir", command=self._on_exit, style="Danger.TButton")
         self.exit_button.pack(side="left", padx=(8, 0))
+    def _repair_nbfc(self) -> None:
+        self.repair_button.configure(state="disabled")
+        self._set_status("Intentando reparar NBFC...")
+        def worker():
+            try:
+                repaired = False
+                # Solo si el controlador es NBFCFanController
+                from amen_hub.backend.fan_controller import NBFCFanController
+                if isinstance(self.controller, NBFCFanController):
+                    repaired = self.controller.repair_nbfc_service()
+                msg = "NBFC reparado correctamente." if repaired else "No se pudo reparar NBFC. Reinicia Windows para limpiar el servicio."
+                self.ui_queue.put(msg)
+            except Exception as ex:
+                self.ui_queue.put(f"Error al reparar NBFC: {ex}")
+            finally:
+                self.ui_queue.put("__enable_repair__")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _drain_queue(self) -> None:
+        while not self.ui_queue.empty():
+            msg = self.ui_queue.get_nowait()
+            if msg == "__enable_apply__":
+                self.apply_button.configure(state="normal")
+                continue
+            if msg == "__enable_repair__":
+                self.repair_button.configure(state="normal")
+                continue
+            if isinstance(msg, tuple) and msg[0] == "__temps__":
+                self._render_temps(msg[1], msg[2])
+                continue
+            self._set_status(str(msg))
+        self.root.after(120, self._drain_queue)
 
         status = ttk.Label(container, textvariable=self.status_var, anchor="w", style="Status.TLabel", padding=(10, 6))
         status.pack(fill="x", side="bottom", pady=(6, 0), ipady=4)
