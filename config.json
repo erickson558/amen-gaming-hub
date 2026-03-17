@@ -1,6 +1,6 @@
 {
-  "cpu_fan_percent": 100,
-  "gpu_fan_percent": 97,
+  "cpu_fan_percent": 67,
+  "gpu_fan_percent": 75,
   "autostart_process": false,
   "autoclose_enabled": false,
   "autoclose_seconds": 60,

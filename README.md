@@ -47,6 +47,8 @@ pip install -r requirements.txt
 python app.py
 ```
 
+Nota: para control real de ventiladores en Victus (NBFC) y lectura CPU por WMI, ejecuta como Administrador.
+
 ## Compilar EXE (sin ventana CMD)
 
 Coloca tu icono como `app.ico` en la raiz del proyecto y ejecuta:
@@ -56,6 +58,7 @@ Coloca tu icono como `app.ico` en la raiz del proyecto y ejecuta:
 ```
 
 El ejecutable generado quedara en la misma carpeta del proyecto.
+El EXE se genera con requerimiento UAC (`--uac-admin`) para permisos de hardware.
 
 ## Modo portable para otros PCs (misma carpeta del EXE)
 

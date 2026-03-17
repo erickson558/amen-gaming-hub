@@ -8,6 +8,8 @@ from tkinter import ttk
 from typing import Any
 
 from amen_hub.backend import build_fan_controller
+from amen_hub.backend import is_running_as_admin
+from amen_hub.backend.fan_controller import find_nbfc_executable
 from amen_hub.backend.telemetry import TemperatureService
 from amen_hub.config import ConfigManager
 from amen_hub.logger import setup_logger
@@ -19,8 +21,9 @@ class MainWindow:
         self.root = root
         self.logger = setup_logger()
         self.config_manager = ConfigManager()
+        self._nbfc_path = find_nbfc_executable(self.config_manager.config.nbfc_executable)
         self.controller = build_fan_controller(self.config_manager.config)
-        self.telemetry = TemperatureService()
+        self.telemetry = TemperatureService(self._nbfc_path)
         self.ui_queue: queue.Queue[Any] = queue.Queue()
 
         self._countdown_remaining = 0
@@ -43,7 +46,12 @@ class MainWindow:
         self.root.after(100, self._drain_queue)
         self.root.after(250, self._ensure_countdown_state)
         self._schedule_telemetry()
-        self._set_status(f"Backend activo: {self.controller.describe()}")
+        if not is_running_as_admin():
+            self._set_status(
+                f"Backend activo: {self.controller.describe()} | Ejecuta como Administrador para control real y CPU temp",
+            )
+        else:
+            self._set_status(f"Backend activo: {self.controller.describe()}")
 
         if self.autostart_var.get():
             self._apply_async()
@@ -264,7 +272,9 @@ class MainWindow:
 
     def _on_backend_changed(self) -> None:
         self._save_config()
+        self._nbfc_path = find_nbfc_executable(self.config_manager.config.nbfc_executable)
         self.controller = build_fan_controller(self.config_manager.config)
+        self.telemetry = TemperatureService(self._nbfc_path)
         self._set_status(f"Backend cambiado a: {self.controller.describe()}")
 
     def _save_config(self) -> None:

@@ -13,6 +13,9 @@ class TemperatureReading:
 
 
 class TemperatureService:
+    def __init__(self, nbfc_executable: str | None = None) -> None:
+        self.nbfc_executable = nbfc_executable
+
     def read(self) -> TemperatureReading:
         return TemperatureReading(cpu_c=self._read_cpu_temp(), gpu_c=self._read_gpu_temp())
 
@@ -32,22 +35,52 @@ class TemperatureService:
             return None
 
     def _read_cpu_temp(self) -> Optional[float]:
+        for cmd in (
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor -ErrorAction SilentlyContinue | "
+                "Where-Object {$_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU'} | "
+                "Select-Object -First 1 -ExpandProperty Value)",
+            ],
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance -Namespace root/OpenHardwareMonitor -ClassName Sensor -ErrorAction SilentlyContinue | "
+                "Where-Object {$_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU'} | "
+                "Select-Object -First 1 -ExpandProperty Value)",
+            ],
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | "
+                "Select-Object -First 1 -ExpandProperty CurrentTemperature)",
+            ],
+        ):
+            value = self._run_temp_command(cmd)
+            if value is not None:
+                return value
+        return None
+
+    def _run_temp_command(self, cmd: list[str]) -> Optional[float]:
         cmd = [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            "(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | "
-            "Select-Object -First 1 -ExpandProperty CurrentTemperature)",
+            *cmd,
         ]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
-            if proc.returncode != 0:
-                return None
-            match = re.search(r"(\d+)", proc.stdout)
-            if not match:
-                return None
-            kelvin_x10 = int(match.group(1))
-            celsius = (kelvin_x10 / 10.0) - 273.15
-            return round(celsius, 1)
+            if proc.returncode == 0:
+                match = re.search(r"([0-9]+(?:\.[0-9]+)?)", proc.stdout)
+                if match:
+                    raw = float(match.group(1))
+                    if raw > 200:
+                        celsius = (raw / 10.0) - 273.15
+                    else:
+                        celsius = raw
+                    if -20 < celsius < 130:
+                        return round(celsius, 1)
+            return None
         except (OSError, ValueError, subprocess.SubprocessError):
             return None

@@ -14,6 +14,7 @@ python -m PyInstaller `
     --clean `
     --onefile `
     --noconsole `
+    --uac-admin `
     --name "AmenGamingHub" `
     --distpath $projectRoot `
     --workpath (Join-Path $projectRoot 'build') `

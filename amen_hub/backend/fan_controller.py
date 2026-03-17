@@ -5,8 +5,10 @@ import shutil
 import subprocess
 from pathlib import Path
 import time
+import ctypes
 from dataclasses import dataclass
 from threading import Lock
+from typing import Optional
 
 from amen_hub.config import AppConfig
 from amen_hub.paths import get_base_path
@@ -59,42 +61,100 @@ class NBFCFanController(FanController):
         self.profile = profile
         self._lock = Lock()
 
+    def _run(self, args: list[str], timeout: int = 10) -> tuple[bool, str]:
+        cmd = [self.executable] + args
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        output = (proc.stdout or "").strip()
+        error = (proc.stderr or "").strip()
+        combined = "\n".join([line for line in (output, error) if line]).strip()
+        lowered = combined.lower()
+
+        has_error_text = any(
+            token in lowered
+            for token in (
+                "error",
+                "service is unavailable",
+                "could not",
+                "access denied",
+                "acceso denegado",
+                "not recognized",
+            )
+        )
+        ok = proc.returncode == 0 and not has_error_text
+        return ok, combined
+
+    def _read_status(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        ok, out = self._run(["status", "--fan", "0"])
+        if not ok or not out:
+            return None, None, None
+
+        auto_value: Optional[float] = None
+        current_value: Optional[float] = None
+        target_value: Optional[float] = None
+
+        for raw in out.splitlines():
+            line = raw.strip().lower()
+            if line.startswith("auto control enabled"):
+                auto_value = 1.0 if "true" in line else 0.0
+            elif line.startswith("current fan speed"):
+                try:
+                    current_value = float(raw.split(":", 1)[1].strip())
+                except (IndexError, ValueError):
+                    current_value = None
+            elif line.startswith("target fan speed"):
+                try:
+                    target_value = float(raw.split(":", 1)[1].strip())
+                except (IndexError, ValueError):
+                    target_value = None
+
+        return auto_value, current_value, target_value
+
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
+        if not is_running_as_admin():
+            return FanApplyResult(
+                False,
+                "Control real requiere ejecutar como Administrador (NBFC service/WMI).",
+            )
+
         cpu = int(min(max(cpu_percent, 0), 100))
         gpu = int(min(max(gpu_percent, 0), 100))
+        requested = gpu
 
         with self._lock:
-            profile_cmd = [self.executable, "config", "--apply", self.profile]
-            profile_proc = subprocess.run(profile_cmd, capture_output=True, text=True, timeout=10, check=False)
-            if profile_proc.returncode != 0:
-                stderr = profile_proc.stderr.strip() or profile_proc.stdout.strip() or "sin detalle"
-                return FanApplyResult(False, f"NBFC no pudo aplicar perfil '{self.profile}': {stderr}")
+            ok, out = self._run(["config", "--apply", self.profile])
+            if not ok:
+                return FanApplyResult(False, f"NBFC no pudo aplicar perfil '{self.profile}': {out or 'sin detalle'}")
 
-            start_cmd = [self.executable, "start", "--enabled"]
-            start_proc = subprocess.run(start_cmd, capture_output=True, text=True, timeout=7, check=False)
-            if start_proc.returncode != 0:
-                stderr = start_proc.stderr.strip() or start_proc.stdout.strip() or "sin detalle"
-                return FanApplyResult(False, f"NBFC no pudo iniciar servicio: {stderr}")
+            ok, out = self._run(["start", "--enabled"], timeout=7)
+            if not ok:
+                return FanApplyResult(False, f"NBFC no pudo iniciar servicio: {out or 'sin detalle'}")
 
-            # Victus/OMEN usually exposes one controllable fan channel to NBFC.
-            fan_targets = ((0, cpu), (0, gpu))
+            ok, out = self._run(["set", "--fan", "0", "--speed", str(requested)], timeout=7)
+            if not ok:
+                if "232" in out:
+                    return FanApplyResult(
+                        False,
+                        "NBFC reporta canalizacion rota (232). Ejecuta la app como Administrador y valida perfil NBFC.",
+                    )
+                return FanApplyResult(False, f"NBFC no pudo fijar velocidad: {out or 'sin detalle'}")
 
-            for fan_index, value in fan_targets:
-                auto_cmd = [self.executable, "set", "--fan", str(fan_index), "--auto"]
-                subprocess.run(auto_cmd, capture_output=True, text=True, timeout=7, check=False)
+            auto_enabled, current, target = self._read_status()
+            if target is None:
+                return FanApplyResult(
+                    False,
+                    "NBFC no devolvio estado de ventilador. Cambia perfil NBFC o ejecuta como Administrador.",
+                )
 
-                cmd = [self.executable, "set", "--fan", str(fan_index), "--speed", str(value)]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7, check=False)
-                if proc.returncode != 0:
-                    stderr = proc.stderr.strip() or proc.stdout.strip() or "sin detalle"
-                    if "232" in stderr:
-                        return FanApplyResult(
-                            False,
-                            "NBFC reporta canalizacion rota (232). Ejecuta la app como Administrador y valida perfil NBFC.",
-                        )
-                    return FanApplyResult(False, f"NBFC fallo fan {fan_index}: {stderr}")
+            if auto_enabled == 1.0 or target <= 0:
+                return FanApplyResult(
+                    False,
+                    "NBFC mantiene auto-control o target en 0. Perfil no compatible con este Victus.",
+                )
 
-        return FanApplyResult(True, f"Velocidades aplicadas por NBFC: CPU {cpu}% | GPU {gpu}%")
+            return FanApplyResult(
+                True,
+                f"Velocidad aplicada por NBFC: solicitado {requested}% | target {target:.1f}% | actual {current or 0:.1f}%",
+            )
 
 
 class CommandTemplateFanController(FanController):
@@ -129,7 +189,10 @@ def build_fan_controller(config: AppConfig) -> FanController:
         return MockHPVictusFanController()
 
     if config.fan_backend == "nbfc":
-        return NBFCFanController(profile=config.nbfc_profile)
+        nbfc_path = find_nbfc_executable(config.nbfc_executable)
+        if nbfc_path:
+            return NBFCFanController(nbfc_path, profile=config.nbfc_profile)
+        return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
 
     if config.fan_backend == "command":
         return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
@@ -171,3 +234,10 @@ def find_nbfc_executable(config_value: str = "auto") -> str | None:
             return str(candidate)
 
     return None
+
+
+def is_running_as_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
+        return False
