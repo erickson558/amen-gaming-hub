@@ -5,6 +5,7 @@ Set-Location $projectRoot
 
 $venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $pythonExe = if (Test-Path $venvPython) { $venvPython } else { 'python' }
+$hooksDir = Join-Path $projectRoot 'pyinstaller_hooks'
 Write-Host "Usando Python: $pythonExe"
 
 $pythonBase = (& $pythonExe -c "import sys; print(sys.base_prefix)").Trim()
@@ -43,6 +44,17 @@ $dataArgs = @(
     '--add-data', "$tkSource;tcl/tk8.6"
 )
 
+$hiddenImportArgs = @(
+    '--hidden-import', 'tkinter',
+    '--hidden-import', 'tkinter.ttk',
+    '--hidden-import', '_tkinter'
+)
+
+$hookArgs = @()
+if (Test-Path $hooksDir) {
+    $hookArgs = @('--additional-hooks-dir', $hooksDir)
+}
+
 & $pythonExe -m PyInstaller `
     --noconfirm `
     --clean `
@@ -54,5 +66,7 @@ $dataArgs = @(
     --workpath (Join-Path $projectRoot 'build') `
     --specpath $projectRoot `
     @dataArgs `
+    @hiddenImportArgs `
+    @hookArgs `
     @iconArgs `
     (Join-Path $projectRoot 'app.py')
