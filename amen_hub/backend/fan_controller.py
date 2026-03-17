@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import ctypes
+import re
 import shlex
 import shutil
 import subprocess
-import re
-from pathlib import Path
 import time
-import ctypes
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 from typing import Optional
 
@@ -219,7 +219,6 @@ class NBFCFanController(FanController):
 
         return auto_value, current_value, target_value
 
-
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         if not is_running_as_admin():
             return FanApplyResult(
@@ -239,12 +238,11 @@ class NBFCFanController(FanController):
                 )
 
             if self._service_process_count() > 1:
-                # Intentar reparación automática
                 repaired = self.repair_nbfc_service()
                 if not repaired or self._service_process_count() > 1:
                     return FanApplyResult(
                         False,
-                        "NBFC detecta multiples procesos de servicio. Reparación automática fallida. Reinicia Windows para limpiar el servicio.",
+                        "NBFC detecta multiples procesos de servicio. Reparacion automatica fallida. Reinicia Windows para limpiar el servicio.",
                     )
 
             ok, out = self._run(["config", "--set", self.profile])
@@ -291,19 +289,47 @@ class NBFCFanController(FanController):
                 f"Velocidad aplicada por NBFC: solicitado {requested}% | target {target:.1f}% | actual {current or 0:.1f}%",
             )
 
+    def diagnosticar_nbfc(self) -> str:
+        lines = [
+            "=== Diagnostico NBFC ===",
+            f"Ejecutable: {self.executable}",
+            f"Perfil actual: {self.profile}",
+            f"Administrador: {'si' if is_running_as_admin() else 'no'}",
+        ]
+
+        with self._lock:
+            lines.append(f"Servicio RUNNING: {'si' if self._is_service_running() else 'no'}")
+            lines.append(f"Procesos NbfcService.exe: {self._service_process_count()}")
+
+            ok_status, status_out = self._run(["status", "--fan", "0"], timeout=8)
+            lines.append("")
+            lines.append("--- status --fan 0 ---")
+            lines.append(status_out if status_out else "(sin salida)")
+            if not ok_status:
+                lines.append("Resultado status: error detectado.")
+
+            ok_profiles, profiles_out = self._run(["config", "--list"], timeout=12)
+            lines.append("")
+            lines.append("--- perfiles (primeros 20) ---")
+            if ok_profiles and profiles_out:
+                profiles = [p.strip() for p in profiles_out.splitlines() if p.strip()]
+                if profiles:
+                    lines.extend(profiles[:20])
+                    if len(profiles) > 20:
+                        lines.append(f"... {len(profiles) - 20} perfiles adicionales.")
+                else:
+                    lines.append("(sin perfiles)")
+            else:
+                lines.append(profiles_out or "No se pudo consultar la lista de perfiles.")
+
+        return "\n".join(lines)
+
     def repair_nbfc_service(self) -> bool:
-        """
-        Intenta limpiar procesos duplicados de NBFC y reiniciar el servicio.
-        Devuelve True si la reparación fue exitosa.
-        """
         try:
-            # Detener servicio
             self._run_system(["sc", "stop", "NbfcService"], timeout=10)
             time.sleep(0.4)
-            # Eliminar todos los procesos NbfcService.exe
             self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=6)
             time.sleep(0.4)
-            # Iniciar servicio
             self._run_system(["sc", "start", "NbfcService"], timeout=12)
             return self._wait_service_running(timeout_s=10.0)
         except Exception:

@@ -12,3 +12,4 @@ build/
 *.log
 log.txt
 *.exe
+.tcl_runtime_cache/

@@ -40,7 +40,7 @@ jobs:
           if ($content -match 'APP_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"') {
             $version = $Matches[1]
             "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "tag=V$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           } else {
             Write-Error "No se pudo leer APP_VERSION"
           }

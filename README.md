@@ -92,13 +92,19 @@ Para mejorar estabilidad, la app usa `config --set` + `set --speed` y evita `nbf
 
 ## Versionado
 
-Version inicial: `0.0.1`
+Formato oficial: `Vx.x.x`.
 
-Para incrementar patch (`+0.0.1`) antes de cada commit:
+Fuente unica de verdad:
+- `APP_VERSION` en `amen_hub/version.py`.
+- `APP_VERSION_TAG` se deriva automaticamente como `f"V{APP_VERSION}"`.
+
+Antes de cada commit, incrementa patch (`+0.0.1`):
 
 ```powershell
 python bump_version.py
 ```
+
+El workflow de release usa el mismo valor y publica tags en GitHub con formato `Vx.x.x`.
 
 ## Seguridad y buenas practicas aplicadas
 

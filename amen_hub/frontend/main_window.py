@@ -219,18 +219,46 @@ class MainWindow:
         actions = ttk.Frame(container, style="Root.TFrame")
         actions.pack(fill="x", pady=(0, 8))
 
-
         self.apply_button = ttk.Button(actions, text="Aplicar", command=self._apply_async, style="Action.TButton")
         self.apply_button.pack(side="left")
 
         self.repair_button = ttk.Button(actions, text="Reparar NBFC", command=self._repair_nbfc, style="Accent.Horizontal.TScale")
         self.repair_button.pack(side="left", padx=(8, 0))
 
+        self.diagnose_button = ttk.Button(actions, text="Diagnóstico NBFC", command=self._diagnose_nbfc, style="Accent.Horizontal.TScale")
+        self.diagnose_button.pack(side="left", padx=(8, 0))
+
         self.exit_button = ttk.Button(actions, text="Salir", command=self._on_exit, style="Danger.TButton")
         self.exit_button.pack(side="left", padx=(8, 0))
+
+        # Barra de estado
+        status = ttk.Label(container, textvariable=self.status_var, anchor="w", style="Status.TLabel", padding=(10, 6))
+        status.pack(fill="x", side="bottom", pady=(6, 0), ipady=4)
+
+    def _diagnose_nbfc(self) -> None:
+        self.diagnose_button.configure(state="disabled")
+        self._set_status("Ejecutando diagnóstico NBFC...")
+
+        def worker():
+            try:
+                from amen_hub.backend.fan_controller import NBFCFanController
+                if isinstance(self.controller, NBFCFanController):
+                    report = self.controller.diagnosticar_nbfc()
+                else:
+                    report = "El backend activo no es NBFC. Cambia a NBFC para diagnóstico."
+                self.ui_queue.put(("__diagnose__", report))
+            except Exception as ex:
+                self.ui_queue.put(("__diagnose__", f"Error en diagnóstico: {ex}"))
+            finally:
+                self.ui_queue.put("__enable_diagnose__")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
     def _repair_nbfc(self) -> None:
         self.repair_button.configure(state="disabled")
         self._set_status("Intentando reparar NBFC...")
+
         def worker():
             try:
                 repaired = False
@@ -244,6 +272,7 @@ class MainWindow:
                 self.ui_queue.put(f"Error al reparar NBFC: {ex}")
             finally:
                 self.ui_queue.put("__enable_repair__")
+
         threading.Thread(target=worker, daemon=True).start()
 
     def _drain_queue(self) -> None:
@@ -255,14 +284,31 @@ class MainWindow:
             if msg == "__enable_repair__":
                 self.repair_button.configure(state="normal")
                 continue
+            if msg == "__enable_diagnose__":
+                self.diagnose_button.configure(state="normal")
+                continue
             if isinstance(msg, tuple) and msg[0] == "__temps__":
                 self._render_temps(msg[1], msg[2])
+                continue
+            if isinstance(msg, tuple) and msg[0] == "__diagnose__":
+                self._show_diagnose_popup(msg[1])
+                self._set_status("Diagnóstico NBFC completado. Haz clic en el botón para ver detalles.")
                 continue
             self._set_status(str(msg))
         self.root.after(120, self._drain_queue)
 
-        status = ttk.Label(container, textvariable=self.status_var, anchor="w", style="Status.TLabel", padding=(10, 6))
-        status.pack(fill="x", side="bottom", pady=(6, 0), ipady=4)
+    def _show_diagnose_popup(self, report: str) -> None:
+        popup = tk.Toplevel(self.root)
+        popup.title("Diagnóstico NBFC")
+        popup.geometry("700x500")
+        popup.configure(bg="#181f24")
+        txt = tk.Text(popup, wrap="word", bg="#181f24", fg="#e6f7ff", font=("Consolas", 10))
+        txt.insert("1.0", report)
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True, padx=10, pady=10)
+        btn = ttk.Button(popup, text="Cerrar", command=popup.destroy)
+        btn.pack(pady=8)
+
 
     def _build_temp_meter(self, parent: ttk.LabelFrame, name: str, variable: tk.StringVar) -> tuple[tk.Canvas, ttk.Label]:
         canvas = tk.Canvas(parent, width=158, height=158, bg="#121a22", highlightthickness=0)
