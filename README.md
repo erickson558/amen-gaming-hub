@@ -51,7 +51,13 @@ Nota: para control real de ventiladores en Victus (NBFC) y lectura CPU por WMI, 
 
 ## Compilar EXE (sin ventana CMD)
 
-Coloca tu icono como `app.ico` en la raiz del proyecto y ejecuta:
+El build usa icono automaticamente con esta prioridad:
+
+1. `app.ico` en la raiz.
+2. Primer archivo `*.ico` encontrado en la raiz.
+3. Si no hay icono, compila sin icono personalizado.
+
+Ejecuta:
 
 ```powershell
 .\build.ps1
