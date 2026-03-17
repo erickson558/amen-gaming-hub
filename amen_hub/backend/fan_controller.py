@@ -113,6 +113,13 @@ class NBFCFanController(FanController):
         except (OSError, subprocess.SubprocessError):
             return 1, "system command failed"
 
+    def _service_process_count(self) -> int:
+        code, out = self._run_system(["tasklist", "/FI", "IMAGENAME eq NbfcService.exe", "/FO", "CSV", "/NH"], timeout=6)
+        if code != 0 or not out:
+            return 0
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip() and "No tasks" not in ln]
+        return len(lines)
+
     def _is_service_running(self) -> bool:
         code, out = self._run_system(["sc", "query", "NbfcService"], timeout=8)
         if code != 0:
@@ -127,11 +134,31 @@ class NBFCFanController(FanController):
             time.sleep(0.35)
         return False
 
-    def _recover_service(self) -> bool:
+    def _hard_reset_service(self) -> bool:
         self._run_system(["sc", "stop", "NbfcService"], timeout=10)
+        time.sleep(0.4)
         self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=6)
+        time.sleep(0.4)
         self._run_system(["sc", "start", "NbfcService"], timeout=12)
         return self._wait_service_running(timeout_s=10.0)
+
+    def _ensure_service_ready(self) -> bool:
+        running = self._is_service_running()
+        count = self._service_process_count()
+
+        if running and count == 1:
+            return True
+
+        if running and count > 1:
+            return self._hard_reset_service()
+
+        self._run_system(["sc", "start", "NbfcService"], timeout=10)
+        if self._wait_service_running(timeout_s=8.0):
+            if self._service_process_count() <= 1:
+                return True
+            return self._hard_reset_service()
+
+        return self._hard_reset_service()
 
     def _candidate_profiles(self) -> list[str]:
         ok, out = self._run(["config", "--list"], timeout=12)
@@ -204,13 +231,16 @@ class NBFCFanController(FanController):
         requested = max(cpu, gpu)
 
         with self._lock:
-            if not self._recover_service():
+            if not self._ensure_service_ready():
                 return FanApplyResult(
                     False,
                     "NBFC service no llega a RUNNING. Reinstala NBFC o reinicia el equipo.",
                 )
 
             ok, out = self._run(["config", "--apply", self.profile])
+            if (not ok) and ("service is unavailable" in out.lower()):
+                if self._hard_reset_service():
+                    ok, out = self._run(["config", "--apply", self.profile])
             if not ok:
                 if self._autodiscover_profile(requested):
                     ok, out = self._run(["config", "--apply", self.profile])

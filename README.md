@@ -87,6 +87,7 @@ Eso deja NBFC dentro de `tools/nbfc/` junto a tu app para que funcione al moverl
 Importante: se copia la carpeta completa de NBFC (no solo `nbfc.exe`) para evitar errores de servicio/pipe.
 
 La app ejecuta comandos de hardware en modo silencioso (`CREATE_NO_WINDOW`) para evitar popups de PowerShell/cmd.
+Tambien aplica recuperacion inteligente de `NbfcService` (sin reinicios agresivos y con reset duro solo cuando detecta estado roto).
 
 ## Versionado
 
