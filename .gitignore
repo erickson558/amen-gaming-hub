@@ -10,3 +10,5 @@ venv/
 build/
 *.spec
 *.log
+log.txt
+*.exe

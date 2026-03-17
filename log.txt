@@ -1,3 +1,0 @@
-2026-03-17 00:00:00 | INFO | MainThread | Archivo de log inicial creado
-2026-03-17 10:45:22 | INFO | MainThread | Logger initialized
-2026-03-17 10:45:30 | INFO | FanApplyWorker | Velocidades aplicadas (modo seguro/simulacion): CPU 50% | GPU 50%
