@@ -5,7 +5,9 @@ Aplicacion de escritorio en Python para ajustar ventiladores CPU/GPU con interfa
 ## Caracteristicas
 
 - Control separado para FAN CPU y FAN GPU.
+- Backend de ventiladores configurable (`auto`, `nbfc`, `command`, `mock`).
 - Interfaz sin bloqueos (worker thread + cola de eventos).
+- Interfaz estilo gaming (tema oscuro con medidores termicos CPU/GPU).
 - Configuracion auto-guardada en `config.json`.
 - Version en GUI (`Vx.y.z`) y flujo de incremento por commit.
 - Log con timestamp en `log.txt`.
@@ -75,7 +77,14 @@ python bump_version.py
 
 ## Nota tecnica de hardware
 
-El backend actual usa modo seguro/simulacion (`MockHPVictusFanController`) para no forzar llamadas no documentadas al EC/BIOS. Si luego quieres integrar control real de HP Victus/OMEN, se puede conectar una implementacion especifica dentro de `amen_hub/backend/` sin tocar la GUI.
+La app intenta control real por backend segun `config.json`:
+
+- `fan_backend: auto`: usa `nbfc.exe` si esta instalado; si no, usa backend por comandos y finalmente mock.
+- `fan_backend: nbfc`: fuerza el uso de NBFC (`nbfc.exe set -f 0/1 -s {valor}`).
+- `fan_backend: command`: ejecuta `fan_command_cpu` y `fan_command_gpu` con placeholder `{value}`.
+- `fan_backend: mock`: modo simulacion.
+
+En algunos equipos HP Victus, el control de ventilador no esta expuesto oficialmente por API publica; en esos casos se recomienda `nbfc` o comandos propios del controlador que ya uses.
 
 ## Licencia
 

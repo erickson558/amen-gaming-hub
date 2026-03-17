@@ -17,6 +17,10 @@ class AppConfig:
     autoclose_seconds: int = 60
     window_geometry: str = "900x560+120+80"
     app_password: str = ""
+    fan_backend: str = "auto"
+    fan_command_cpu: str = ""
+    fan_command_gpu: str = ""
+    telemetry_interval_seconds: int = 2
 
 
 class ConfigManager:
@@ -51,10 +55,16 @@ class ConfigManager:
         safe["cpu_fan_percent"] = int(min(max(int(safe["cpu_fan_percent"]), 0), 100))
         safe["gpu_fan_percent"] = int(min(max(int(safe["gpu_fan_percent"]), 0), 100))
         safe["autoclose_seconds"] = int(min(max(int(safe["autoclose_seconds"]), 5), 3600))
+        safe["telemetry_interval_seconds"] = int(min(max(int(safe["telemetry_interval_seconds"]), 1), 30))
         safe["autostart_process"] = bool(safe["autostart_process"])
         safe["autoclose_enabled"] = bool(safe["autoclose_enabled"])
         safe["window_geometry"] = str(safe["window_geometry"])
         safe["app_password"] = str(safe["app_password"])
+        safe["fan_backend"] = str(safe["fan_backend"]).strip().lower()
+        if safe["fan_backend"] not in {"auto", "mock", "nbfc", "command"}:
+            safe["fan_backend"] = "auto"
+        safe["fan_command_cpu"] = str(safe["fan_command_cpu"])
+        safe["fan_command_gpu"] = str(safe["fan_command_gpu"])
         return safe
 
     def save(self) -> None:

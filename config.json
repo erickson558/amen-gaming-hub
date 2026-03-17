@@ -1,9 +1,13 @@
 {
   "cpu_fan_percent": 100,
-  "gpu_fan_percent": 100,
+  "gpu_fan_percent": 97,
   "autostart_process": false,
   "autoclose_enabled": false,
   "autoclose_seconds": 60,
-  "window_geometry": "900x560+489+104",
-  "app_password": ""
+  "window_geometry": "980x620+1904+34",
+  "app_password": "",
+  "fan_backend": "auto",
+  "fan_command_cpu": "",
+  "fan_command_gpu": "",
+  "telemetry_interval_seconds": 2
 }
