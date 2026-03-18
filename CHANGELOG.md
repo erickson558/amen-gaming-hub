@@ -1,5 +1,12 @@
 # Changelog
 
+## V0.0.17 - 2026-03-17
+
+- Se ocultan de forma consistente las ventanas de consola de procesos auxiliares (`OmenMon`, `PowerShell`, `nvidia-smi`, `NBFC`) usando un wrapper comun para subprocesos Windows.
+- La telemetria se dispara al abrir la app y sigue en ciclo sin solapar hilos, para que el monitoreo sea mas fluido.
+- La UI muestra temperaturas con notacion explicita `°C`.
+- Se agrega una ruta HP/OMEN para lectura de temperatura CPU usando `OmenMon` cuando esta disponible.
+
 ## V0.0.16 - 2026-03-17
 
 - Se corrige la invocacion de `OmenMon.exe` para rutas con espacios.

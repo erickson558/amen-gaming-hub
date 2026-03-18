@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+from amen_hub.subprocess_utils import run_hidden
 
 
 @dataclass
@@ -13,9 +15,9 @@ class TemperatureReading:
 
 
 class TemperatureService:
-    def __init__(self, nbfc_executable: str | None = None) -> None:
+    def __init__(self, nbfc_executable: str | None = None, omenmon_executable: str | None = None) -> None:
         self.nbfc_executable = nbfc_executable
-        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self.omenmon_executable = omenmon_executable
 
     def read(self) -> TemperatureReading:
         return TemperatureReading(cpu_c=self._read_cpu_temp(), gpu_c=self._read_gpu_temp())
@@ -27,22 +29,25 @@ class TemperatureService:
             "--format=csv,noheader,nounits",
         ]
         try:
-            proc = subprocess.run(
+            proc = run_hidden(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=4,
                 check=False,
-                creationflags=self._no_window_flag,
             )
             if proc.returncode != 0:
                 return None
             value = proc.stdout.strip().splitlines()[0].strip()
             return float(value)
-        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        except (OSError, ValueError, IndexError):
             return None
 
     def _read_cpu_temp(self) -> Optional[float]:
+        omenmon_temp = self._read_omenmon_temp()
+        if omenmon_temp is not None:
+            return omenmon_temp
+
         for cmd in (
             [
                 "powershell",
@@ -73,29 +78,54 @@ class TemperatureService:
                 return value
         return None
 
-    def _run_temp_command(self, cmd: list[str]) -> Optional[float]:
-        cmd = [
-            *cmd,
-        ]
+    def _read_omenmon_temp(self) -> Optional[float]:
+        if not self.omenmon_executable:
+            return None
+
+        executable = Path(self.omenmon_executable)
         try:
-            proc = subprocess.run(
-                cmd,
+            proc = run_hidden(
+                [str(executable), "-Bios", "Temp"],
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+                cwd=str(executable.parent),
+            )
+        except OSError:
+            return None
+
+        if proc.returncode != 0:
+            return None
+
+        return self._extract_temperature(proc.stdout)
+
+    def _run_temp_command(self, cmd: list[str]) -> Optional[float]:
+        try:
+            proc = run_hidden(
+                [*cmd],
                 capture_output=True,
                 text=True,
                 timeout=5,
                 check=False,
-                creationflags=self._no_window_flag,
             )
             if proc.returncode == 0:
-                match = re.search(r"([0-9]+(?:\.[0-9]+)?)", proc.stdout)
-                if match:
-                    raw = float(match.group(1))
-                    if raw > 200:
-                        celsius = (raw / 10.0) - 273.15
-                    else:
-                        celsius = raw
-                    if -20 < celsius < 130:
-                        return round(celsius, 1)
+                return self._extract_temperature(proc.stdout)
             return None
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError):
             return None
+
+    def _extract_temperature(self, text: str) -> Optional[float]:
+        candidates: list[float] = []
+        for token in re.findall(r"(?<![A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)", text):
+            raw = float(token)
+            if raw > 200:
+                celsius = (raw / 10.0) - 273.15
+            else:
+                celsius = raw
+            if -20 < celsius < 130:
+                candidates.append(round(celsius, 1))
+
+        if not candidates:
+            return None
+        return candidates[-1]

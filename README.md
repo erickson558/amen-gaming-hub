@@ -4,8 +4,9 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 
 ## Que hace el programa
 
-- Muestra temperatura CPU/GPU en una interfaz Tkinter.
+- Muestra temperatura CPU/GPU en una interfaz Tkinter con notacion `°C`.
 - Aplica velocidades de ventilador desde una GUI sin bloquear el hilo principal.
+- Refresca la telemetria al abrir y luego en vivo segun `telemetry_interval_seconds`.
 - Guarda configuracion persistente en `config.json`.
 - Permite usar distintos backends de control:
   - `omenmon`: control HP/OMEN basado en WMI/EC para equipos compatibles.
@@ -151,6 +152,7 @@ Los valores persistentes viven en `config.json`. Campos relevantes:
 - `nbfc_executable`
 - `nbfc_autodiscover_profile`
 - `window_geometry`
+- `telemetry_interval_seconds`
 
 `config.json` es configuracion local y no debe considerarse parte del codigo fuente.
 
@@ -216,6 +218,13 @@ El build usa hooks de PyInstaller y empaqueta Tcl/Tk. Recompila con:
 - Usa backend `auto` u `omenmon` para evitar seguir forzando `nbfc` en Victus/OMEN.
 - Verifica que `tools/omenmon/OmenMon.exe` exista.
 - La app normaliza `OmenMon.xml` en local para Victus/OMEN con `BiosErrorReporting=false`, `FanLevelNeedManual=true` y `FanLevelUseEc=true`.
+
+### La telemetria no muestra CPU o no parece actualizar
+
+- La app muestra temperaturas en `°C`.
+- GPU usa `nvidia-smi` cuando esta disponible.
+- CPU intenta `OmenMon` y luego WMI (`LibreHardwareMonitor`, `OpenHardwareMonitor`, `MSAcpi_ThermalZoneTemperature`).
+- En equipos HP Victus/OMEN, ejecuta la app como Administrador para habilitar la lectura por `OmenMon`.
 
 ### No se puede recompilar el `.exe`
 

@@ -14,6 +14,7 @@ from typing import Optional
 
 from amen_hub.config import AppConfig
 from amen_hub.paths import get_base_path
+from amen_hub.subprocess_utils import run_hidden
 
 
 @dataclass
@@ -81,7 +82,6 @@ class OmenMonFanController(FanController):
     def __init__(self, executable: str = "OmenMon.exe") -> None:
         self.executable = str(Path(executable).resolve())
         self._lock = Lock()
-        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     @property
     def executable_path(self) -> Path:
@@ -93,14 +93,13 @@ class OmenMonFanController(FanController):
 
     def _run(self, args: list[str], timeout: int = 20) -> tuple[bool, str]:
         try:
-            proc = subprocess.run(
+            proc = run_hidden(
                 [self.executable, *args],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 check=False,
                 cwd=str(self.executable_path.parent),
-                creationflags=self._no_window_flag,
             )
         except subprocess.TimeoutExpired:
             return False, f"OmenMon excedio el timeout de {timeout}s"
@@ -224,17 +223,15 @@ class NBFCFanController(FanController):
         self.profile = profile
         self.autodiscover_profile = autodiscover_profile
         self._lock = Lock()
-        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def _run(self, args: list[str], timeout: int = 10) -> tuple[bool, str]:
         cmd = [self.executable] + args
-        proc = subprocess.run(
+        proc = run_hidden(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
-            creationflags=self._no_window_flag,
         )
         output = (proc.stdout or "").strip()
         error = (proc.stderr or "").strip()
@@ -257,13 +254,12 @@ class NBFCFanController(FanController):
 
     def _run_system(self, cmd: list[str], timeout: int = 12) -> tuple[int, str]:
         try:
-            proc = subprocess.run(
+            proc = run_hidden(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 check=False,
-                creationflags=self._no_window_flag,
             )
             out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
             return proc.returncode, out
@@ -284,13 +280,12 @@ class NBFCFanController(FanController):
 
     def _list_service_process_pids(self) -> list[int]:
         try:
-            proc = subprocess.run(
+            proc = run_hidden(
                 ["tasklist", "/FI", "IMAGENAME eq NbfcService.exe", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
                 timeout=6,
                 check=False,
-                creationflags=self._no_window_flag,
             )
         except (OSError, subprocess.SubprocessError):
             return []
@@ -328,13 +323,12 @@ class NBFCFanController(FanController):
 
     def _is_cli_available(self) -> bool:
         try:
-            proc = subprocess.run(
+            proc = run_hidden(
                 [self.executable, "status", "--fan", "0"],
                 capture_output=True,
                 text=True,
                 timeout=8,
                 check=False,
-                creationflags=self._no_window_flag,
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -622,7 +616,6 @@ class CommandTemplateFanController(FanController):
         self._cpu_template = cpu_template.strip()
         self._gpu_template = gpu_template.strip()
         self._lock = Lock()
-        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         if not self._cpu_template or not self._gpu_template:
@@ -635,13 +628,12 @@ class CommandTemplateFanController(FanController):
 
         with self._lock:
             for cmd in (cpu_cmd, gpu_cmd):
-                proc = subprocess.run(
+                proc = run_hidden(
                     cmd,
                     capture_output=True,
                     text=True,
                     timeout=10,
                     check=False,
-                    creationflags=self._no_window_flag,
                 )
                 if proc.returncode != 0:
                     stderr = proc.stderr.strip() or proc.stdout.strip() or "sin detalle"
@@ -758,15 +750,13 @@ def find_nbfc_executable(config_value: str = "auto") -> str | None:
 
 
 def _find_nbfc_cli_from_service() -> str | None:
-    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["sc", "qc", "NbfcService"],
             capture_output=True,
             text=True,
             timeout=6,
             check=False,
-            creationflags=no_window,
         )
         if proc.returncode != 0:
             return None

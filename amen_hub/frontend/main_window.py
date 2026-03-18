@@ -9,6 +9,7 @@ from typing import Any
 
 from amen_hub.backend import build_fan_controller
 from amen_hub.backend import is_running_as_admin
+from amen_hub.backend.fan_controller import find_omenmon_executable
 from amen_hub.backend.fan_controller import find_nbfc_executable
 from amen_hub.backend.telemetry import TemperatureService
 from amen_hub.config import ConfigManager
@@ -22,13 +23,15 @@ class MainWindow:
         self.logger = setup_logger()
         self.config_manager = ConfigManager()
         self._nbfc_path = find_nbfc_executable(self.config_manager.config.nbfc_executable)
+        self._omenmon_path = find_omenmon_executable(self.config_manager.config.omenmon_executable)
         self.controller = build_fan_controller(self.config_manager.config)
-        self.telemetry = TemperatureService(self._nbfc_path)
+        self.telemetry = TemperatureService(self._nbfc_path, self._omenmon_path)
         self.ui_queue: queue.Queue[Any] = queue.Queue()
 
         self._countdown_remaining = 0
         self._countdown_job: str | None = None
         self._telemetry_job: str | None = None
+        self._telemetry_inflight = False
         self._base_status = "Listo"
 
         self.root.title(f"Amen Gaming Hub {APP_VERSION_TAG}")
@@ -45,7 +48,7 @@ class MainWindow:
 
         self.root.after(100, self._drain_queue)
         self.root.after(250, self._ensure_countdown_state)
-        self._schedule_telemetry()
+        self._telemetry_async()
         if not is_running_as_admin():
             self._set_status(
                 f"Backend activo: {self.controller.describe()} | Ejecuta como Administrador para control real y CPU temp",
@@ -91,8 +94,8 @@ class MainWindow:
         self.nbfc_profile_var = tk.StringVar(value=cfg.nbfc_profile)
         self.show_password_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="Listo")
-        self.cpu_temp_var = tk.StringVar(value="--.- C")
-        self.gpu_temp_var = tk.StringVar(value="--.- C")
+        self.cpu_temp_var = tk.StringVar(value="--.- °C")
+        self.gpu_temp_var = tk.StringVar(value="--.- °C")
 
     def _build_menu(self) -> None:
         menu = tk.Menu(self.root)
@@ -121,7 +124,7 @@ class MainWindow:
         top_row = ttk.Frame(container, style="Root.TFrame")
         top_row.pack(fill="x", pady=(0, 10))
 
-        temp_card = ttk.LabelFrame(top_row, text="Temperaturas", style="Card.TLabelframe")
+        temp_card = ttk.LabelFrame(top_row, text="Temperaturas (°C)", style="Card.TLabelframe")
         temp_card.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
         self.cpu_temp_canvas, self.cpu_temp_label = self._build_temp_meter(temp_card, "CPU", self.cpu_temp_var)
@@ -291,6 +294,9 @@ class MainWindow:
             if isinstance(msg, tuple) and msg[0] == "__temps__":
                 self._render_temps(msg[1], msg[2])
                 continue
+            if msg == "__telemetry_done__":
+                self._telemetry_inflight = False
+                continue
             if isinstance(msg, tuple) and msg[0] == "__diagnose__":
                 self._show_diagnose_popup(msg[1])
                 self._set_status("Diagnóstico NBFC completado. Haz clic en el botón para ver detalles.")
@@ -356,8 +362,9 @@ class MainWindow:
     def _on_backend_changed(self) -> None:
         self._save_config()
         self._nbfc_path = find_nbfc_executable(self.config_manager.config.nbfc_executable)
+        self._omenmon_path = find_omenmon_executable(self.config_manager.config.omenmon_executable)
         self.controller = build_fan_controller(self.config_manager.config)
-        self.telemetry = TemperatureService(self._nbfc_path)
+        self.telemetry = TemperatureService(self._nbfc_path, self._omenmon_path)
         self._set_status(f"Backend cambiado a: {self.controller.describe()}")
 
     def _save_config(self) -> None:
@@ -415,13 +422,20 @@ class MainWindow:
         self._telemetry_job = self.root.after(interval * 1000, self._telemetry_async)
 
     def _telemetry_async(self) -> None:
+        if self._telemetry_inflight:
+            self._schedule_telemetry()
+            return
+        self._telemetry_inflight = True
         thread = threading.Thread(target=self._worker_telemetry, name="TelemetryWorker", daemon=True)
         thread.start()
         self._schedule_telemetry()
 
     def _worker_telemetry(self) -> None:
-        reading = self.telemetry.read()
-        self.ui_queue.put(("__temps__", reading.cpu_c, reading.gpu_c))
+        try:
+            reading = self.telemetry.read()
+            self.ui_queue.put(("__temps__", reading.cpu_c, reading.gpu_c))
+        finally:
+            self.ui_queue.put("__telemetry_done__")
 
     def _render_temps(self, cpu_c: float | None, gpu_c: float | None) -> None:
         self._update_meter(self.cpu_temp_canvas, cpu_c, self.cpu_temp_var)
@@ -429,10 +443,10 @@ class MainWindow:
 
     def _update_meter(self, canvas: tk.Canvas, temp_c: float | None, var: tk.StringVar) -> None:
         if temp_c is None:
-            value_text = "N/D"
+            value_text = "--.- °C"
             ratio = 0
         else:
-            value_text = f"{temp_c:.1f} C"
+            value_text = f"{temp_c:.1f} °C"
             ratio = min(max(temp_c / 100.0, 0.0), 1.0)
 
         var.set(value_text)
