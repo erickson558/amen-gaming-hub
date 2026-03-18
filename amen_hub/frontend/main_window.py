@@ -177,8 +177,12 @@ class MainWindow:
         cpu_manual_row = ttk.Frame(speed_card, style="Card.TFrame")
         cpu_manual_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
         ttk.Label(cpu_manual_row, text="CPU manual:").pack(side="left")
-        self.cpu_entry = ttk.Entry(
+        self.cpu_entry = ttk.Spinbox(
             cpu_manual_row,
+            from_=0,
+            to=100,
+            increment=1,
+            command=lambda: self._on_percent_spin("cpu"),
             width=5,
             justify="center",
             textvariable=self.cpu_input_var,
@@ -204,8 +208,12 @@ class MainWindow:
         gpu_manual_row = ttk.Frame(speed_card, style="Card.TFrame")
         gpu_manual_row.grid(row=5, column=0, sticky="ew", padx=12, pady=(4, 12))
         ttk.Label(gpu_manual_row, text="GPU manual:").pack(side="left")
-        self.gpu_entry = ttk.Entry(
+        self.gpu_entry = ttk.Spinbox(
             gpu_manual_row,
+            from_=0,
+            to=100,
+            increment=1,
+            command=lambda: self._on_percent_spin("gpu"),
             width=5,
             justify="center",
             textvariable=self.gpu_input_var,
@@ -519,6 +527,10 @@ class MainWindow:
         value = int(text)
         if slider_var.get() != value:
             slider_var.set(value)
+
+    def _on_percent_spin(self, target: str) -> None:
+        self._on_percent_entry_change(target)
+        self._normalize_percent_entry(target)
 
     def _normalize_percent_entry(self, target: str) -> str | None:
         entry_var = self.cpu_input_var if target == "cpu" else self.gpu_input_var

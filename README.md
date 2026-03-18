@@ -7,7 +7,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 - Muestra temperatura CPU/GPU en una interfaz Tkinter con notacion `°C`.
 - Aplica velocidades de ventilador desde una GUI sin bloquear el hilo principal.
 - Permite `Aplicar en vivo` para que los cambios de los diales se reflejen inmediatamente en los ventiladores.
-- Permite editar manualmente el porcentaje CPU/GPU con campos numericos `0-100` sincronizados con los diales.
+- Permite editar manualmente el porcentaje CPU/GPU con `Spinbox` numericos `0-100` sincronizados con los diales.
 - Refresca la telemetria al abrir y luego en vivo segun `telemetry_interval_seconds`.
 - Incluye `Modo auto termico` para enfriar CPU/GPU segun la temperatura del equipo.
 - Guarda configuracion persistente en `config.json`.
@@ -147,8 +147,9 @@ Backend de simulacion seguro para validar UI, threading y persistencia.
 
 ### Campos Manuales CPU/GPU
 
-- Cada ventilador tiene un campo numerico manual `0-100` ademas del dial.
+- Cada ventilador tiene un `Spinbox` manual `0-100` ademas del dial.
 - El campo y el dial comparten el mismo valor, asi que cualquiera de los dos actualiza al otro.
+- El `Spinbox` permite ajustar con flechas arriba/abajo ademas de escritura directa.
 - Si el valor queda vacio al salir del campo, la app restaura automaticamente el ultimo porcentaje valido.
 
 ### Alternativa HP Victus / OMEN

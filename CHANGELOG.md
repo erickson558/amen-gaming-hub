@@ -1,5 +1,10 @@
 # Changelog
 
+## V0.0.23 - 2026-03-17
+
+- Los campos manuales CPU/GPU pasan de texto libre a `Spinbox`, con flechas arriba/abajo para ajustar porcentaje sin teclear.
+- Se mantiene la validacion `0-100` y la sincronizacion bidireccional entre `Spinbox` y dial.
+
 ## V0.0.22 - 2026-03-17
 
 - Se agregan campos numericos directos `0-100` para CPU y GPU junto a cada dial de ventilador.
