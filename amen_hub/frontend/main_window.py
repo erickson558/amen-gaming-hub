@@ -261,12 +261,13 @@ class MainWindow:
 
         def worker():
             try:
-                repaired = False
-                # Solo si el controlador es NBFCFanController
                 from amen_hub.backend.fan_controller import NBFCFanController
                 if isinstance(self.controller, NBFCFanController):
-                    repaired = self.controller.repair_nbfc_service()
-                msg = "NBFC reparado correctamente." if repaired else "No se pudo reparar NBFC. Reinicia Windows para limpiar el servicio."
+                    repaired, report = self.controller.repair_nbfc_service_with_report()
+                    msg = report
+                else:
+                    repaired = False
+                    msg = "El backend activo no es NBFC. Cambia a NBFC para reparar."
                 self.ui_queue.put(msg)
             except Exception as ex:
                 self.ui_queue.put(f"Error al reparar NBFC: {ex}")
@@ -422,20 +423,6 @@ class MainWindow:
         reading = self.telemetry.read()
         self.ui_queue.put(("__temps__", reading.cpu_c, reading.gpu_c))
 
-    def _drain_queue(self) -> None:
-        while not self.ui_queue.empty():
-            msg = self.ui_queue.get_nowait()
-            if msg == "__enable_apply__":
-                self.apply_button.configure(state="normal")
-                continue
-
-            if isinstance(msg, tuple) and msg[0] == "__temps__":
-                self._render_temps(msg[1], msg[2])
-                continue
-
-            self._set_status(str(msg))
-        self.root.after(120, self._drain_queue)
-
     def _render_temps(self, cpu_c: float | None, gpu_c: float | None) -> None:
         self._update_meter(self.cpu_temp_canvas, cpu_c, self.cpu_temp_var)
         self._update_meter(self.gpu_temp_canvas, gpu_c, self.gpu_temp_var)
@@ -501,7 +488,7 @@ class MainWindow:
 
         ttk.Label(
             top,
-            text=f"{APP_VERSION_TAG} x.x creado por Synyster Rick, {year} Derechos Reservados",
+            text=f"Amen Gaming Hub {APP_VERSION_TAG}\nApache License 2.0\nSynyster Rick, {year}",
             padding=14,
             justify="left",
         ).pack(fill="x")

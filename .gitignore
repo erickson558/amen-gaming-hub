@@ -13,3 +13,5 @@ build/
 log.txt
 *.exe
 .tcl_runtime_cache/
+tools/nbfc/
+tools/omenmon/

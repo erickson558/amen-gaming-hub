@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import ctypes
 import re
 import shlex
@@ -19,6 +20,17 @@ from amen_hub.paths import get_base_path
 class FanApplyResult:
     ok: bool
     message: str
+
+
+@dataclass
+class ServiceInfo:
+    state_code: int | None
+    pid: int | None
+    raw_output: str
+
+    @property
+    def is_running(self) -> bool:
+        return self.state_code == 4
 
 
 class FanController:
@@ -113,50 +125,118 @@ class NBFCFanController(FanController):
         except (OSError, subprocess.SubprocessError):
             return 1, "system command failed"
 
+    def _query_service_info(self) -> ServiceInfo:
+        code, out = self._run_system(["sc", "queryex", "NbfcService"], timeout=8)
+        if code != 0:
+            return ServiceInfo(None, None, out)
+
+        state_match = re.search(r"(?:STATE|ESTADO)\s*:\s*(\d+)", out, re.IGNORECASE)
+        pid_match = re.search(r"\bPID\s*:\s*(\d+)", out, re.IGNORECASE)
+
+        state_code = int(state_match.group(1)) if state_match else None
+        pid = int(pid_match.group(1)) if pid_match else None
+        return ServiceInfo(state_code, pid, out)
+
+    def _list_service_process_pids(self) -> list[int]:
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq NbfcService.exe", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+                creationflags=self._no_window_flag,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+
+        pids: list[int] = []
+        for row in csv.reader(line for line in proc.stdout.splitlines() if line.strip()):
+            if not row or row[0].strip().lower() != "nbfcservice.exe":
+                continue
+            try:
+                pids.append(int(row[1]))
+            except (IndexError, ValueError):
+                continue
+        return pids
+
     def _service_process_count(self) -> int:
-        code, out = self._run_system(["tasklist", "/FI", "IMAGENAME eq NbfcService.exe", "/FO", "CSV", "/NH"], timeout=6)
-        if code != 0 or not out:
-            return 0
-        lines = [ln.strip() for ln in out.splitlines() if ln.strip() and "No tasks" not in ln]
-        return len(lines)
+        return len(self._list_service_process_pids())
 
     def _is_service_running(self) -> bool:
-        code, out = self._run_system(["sc", "query", "NbfcService"], timeout=8)
-        if code != 0:
-            return False
-        return "RUNNING" in out.upper()
+        return self._query_service_info().is_running
 
-    def _wait_service_running(self, timeout_s: float = 8.0) -> bool:
+    def _wait_for_service_state(self, expected_states: set[int], timeout_s: float = 8.0) -> ServiceInfo | None:
         end = time.time() + timeout_s
         while time.time() < end:
-            if self._is_service_running():
-                return True
+            info = self._query_service_info()
+            if info.state_code in expected_states:
+                return info
             time.sleep(0.35)
+        return None
+
+    def _wait_service_running(self, timeout_s: float = 8.0) -> bool:
+        return self._wait_for_service_state({4}, timeout_s=timeout_s) is not None
+
+    def _is_cli_available(self) -> bool:
+        try:
+            proc = subprocess.run(
+                [self.executable, "status", "--fan", "0"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+                creationflags=self._no_window_flag,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+        combined = "\n".join(part.strip() for part in (proc.stdout, proc.stderr) if part and part.strip())
+        lowered = combined.lower()
+        unavailable_tokens = (
+            "service is unavailable",
+            "broken pipe",
+            "pipe is being closed",
+            "nullreference",
+            "null reference",
+        )
+        if any(token in lowered for token in unavailable_tokens):
+            return False
+        return proc.returncode == 0
+
+    def _wait_for_cli_available(self, timeout_s: float = 8.0) -> bool:
+        end = time.time() + timeout_s
+        while time.time() < end:
+            if self._is_cli_available():
+                return True
+            time.sleep(0.4)
         return False
 
     def _hard_reset_service(self) -> bool:
-        self._run_system(["sc", "stop", "NbfcService"], timeout=10)
-        time.sleep(0.4)
-        self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=6)
-        time.sleep(0.4)
-        self._run_system(["sc", "start", "NbfcService"], timeout=12)
-        return self._wait_service_running(timeout_s=10.0)
+        ok, _message = self._repair_nbfc_service_locked()
+        return ok
 
     def _ensure_service_ready(self) -> bool:
-        running = self._is_service_running()
-        count = self._service_process_count()
+        info = self._query_service_info()
 
-        if running and count == 1:
+        if info.is_running and self._wait_for_cli_available(timeout_s=5.0):
             return True
 
-        if running and count > 1:
-            return self._hard_reset_service()
-
-        self._run_system(["sc", "start", "NbfcService"], timeout=10)
-        if self._wait_service_running(timeout_s=8.0):
-            if self._service_process_count() <= 1:
+        if info.state_code in {2, 3}:
+            waited = self._wait_for_service_state({1, 4}, timeout_s=10.0)
+            if waited is not None and waited.is_running and self._wait_for_cli_available(timeout_s=5.0):
                 return True
-            return self._hard_reset_service()
+
+        if info.state_code == 1:
+            self._run_system(["sc", "start", "NbfcService"], timeout=12)
+            if self._wait_service_running(timeout_s=12.0) and self._wait_for_cli_available(timeout_s=6.0):
+                return True
+
+        if info.is_running and self._wait_for_cli_available(timeout_s=3.0):
+            return True
 
         return self._hard_reset_service()
 
@@ -234,20 +314,13 @@ class NBFCFanController(FanController):
             if not self._ensure_service_ready():
                 return FanApplyResult(
                     False,
-                    "NBFC service no llega a RUNNING. Reinstala NBFC o reinicia el equipo.",
+                    "NBFC service no queda operativo. Intenta Reparar NBFC y valida permisos de Administrador.",
                 )
-
-            if self._service_process_count() > 1:
-                repaired = self.repair_nbfc_service()
-                if not repaired or self._service_process_count() > 1:
-                    return FanApplyResult(
-                        False,
-                        "NBFC detecta multiples procesos de servicio. Reparacion automatica fallida. Reinicia Windows para limpiar el servicio.",
-                    )
 
             ok, out = self._run(["config", "--set", self.profile])
             if (not ok) and ("service is unavailable" in out.lower()):
-                if self._hard_reset_service():
+                repaired, _repair_report = self._repair_nbfc_service_locked()
+                if repaired:
                     ok, out = self._run(["config", "--set", self.profile])
             if not ok:
                 if self._autodiscover_profile(requested):
@@ -290,16 +363,22 @@ class NBFCFanController(FanController):
             )
 
     def diagnosticar_nbfc(self) -> str:
+        service_info = self._query_service_info()
+        process_pids = self._list_service_process_pids()
         lines = [
             "=== Diagnostico NBFC ===",
             f"Ejecutable: {self.executable}",
             f"Perfil actual: {self.profile}",
             f"Administrador: {'si' if is_running_as_admin() else 'no'}",
+            f"Estado servicio: {service_info.state_code if service_info.state_code is not None else 'N/D'}",
+            f"PID servicio: {service_info.pid if service_info.pid is not None else 'N/D'}",
+            f"PIDs NbfcService.exe: {process_pids if process_pids else '[]'}",
         ]
 
         with self._lock:
-            lines.append(f"Servicio RUNNING: {'si' if self._is_service_running() else 'no'}")
+            lines.append(f"Servicio RUNNING: {'si' if service_info.is_running else 'no'}")
             lines.append(f"Procesos NbfcService.exe: {self._service_process_count()}")
+            lines.append(f"CLI disponible: {'si' if self._is_cli_available() else 'no'}")
 
             ok_status, status_out = self._run(["status", "--fan", "0"], timeout=8)
             lines.append("")
@@ -324,16 +403,71 @@ class NBFCFanController(FanController):
 
         return "\n".join(lines)
 
-    def repair_nbfc_service(self) -> bool:
+    def _repair_nbfc_service_locked(self) -> tuple[bool, str]:
+        if not is_running_as_admin():
+            return False, "La reparacion NBFC requiere ejecutar la app como Administrador."
+
+        steps: list[str] = []
         try:
+            initial = self._query_service_info()
+            steps.append(
+                f"Estado inicial: state={initial.state_code if initial.state_code is not None else 'N/D'} "
+                f"pid={initial.pid if initial.pid is not None else 'N/D'} pids={self._list_service_process_pids()}"
+            )
+
             self._run_system(["sc", "stop", "NbfcService"], timeout=10)
-            time.sleep(0.4)
-            self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=6)
-            time.sleep(0.4)
+            stopped = self._wait_for_service_state({1}, timeout_s=10.0)
+            if stopped is None:
+                current = self._query_service_info()
+                if current.pid:
+                    self._run_system(["taskkill", "/PID", str(current.pid), "/T", "/F"], timeout=8)
+                    steps.append(f"Se forzo cierre del PID del servicio: {current.pid}")
+
+                extra_pids = self._list_service_process_pids()
+                if extra_pids:
+                    self._run_system(["taskkill", "/F", "/IM", "NbfcService.exe"], timeout=8)
+                    steps.append(f"Se forzo cierre por imagen. PIDs detectados: {extra_pids}")
+
+                self._wait_for_service_state({1}, timeout_s=8.0)
+
+            time.sleep(1.0)
             self._run_system(["sc", "start", "NbfcService"], timeout=12)
-            return self._wait_service_running(timeout_s=10.0)
-        except Exception:
-            return False
+            running = self._wait_for_service_state({4}, timeout_s=12.0)
+            if running is None:
+                current = self._query_service_info()
+                steps.append(
+                    f"El servicio no llego a RUNNING. state={current.state_code if current.state_code is not None else 'N/D'} "
+                    f"pid={current.pid if current.pid is not None else 'N/D'}"
+                )
+                return False, "No se pudo levantar NbfcService. " + " | ".join(steps)
+
+            if not self._wait_for_cli_available(timeout_s=12.0):
+                current = self._query_service_info()
+                steps.append(
+                    f"El servicio arranco pero la CLI no responde. state={current.state_code if current.state_code is not None else 'N/D'} "
+                    f"pid={current.pid if current.pid is not None else 'N/D'} pids={self._list_service_process_pids()}"
+                )
+                return False, "NbfcService arranco pero sigue no disponible para nbfc.exe. " + " | ".join(steps)
+
+            final_info = self._query_service_info()
+            final_pids = self._list_service_process_pids()
+            return True, (
+                "NBFC reparado correctamente. "
+                f"state={final_info.state_code if final_info.state_code is not None else 'N/D'} "
+                f"pid={final_info.pid if final_info.pid is not None else 'N/D'} "
+                f"pids={final_pids}"
+            )
+        except Exception as ex:
+            return False, f"Error inesperado reparando NBFC: {ex}"
+
+    def repair_nbfc_service(self) -> bool:
+        with self._lock:
+            ok, _message = self._repair_nbfc_service_locked()
+            return ok
+
+    def repair_nbfc_service_with_report(self) -> tuple[bool, str]:
+        with self._lock:
+            return self._repair_nbfc_service_locked()
 
 
 class CommandTemplateFanController(FanController):
