@@ -8,10 +8,11 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 - Aplica velocidades de ventilador desde una GUI sin bloquear el hilo principal.
 - Guarda configuracion persistente en `config.json`.
 - Permite usar distintos backends de control:
+  - `omenmon`: control HP/OMEN basado en WMI/EC para equipos compatibles.
   - `nbfc`: NoteBook FanControl.
   - `command`: comandos externos parametrizados.
   - `mock`: simulacion segura.
-  - `auto`: intenta elegir el backend disponible.
+  - `auto`: prioriza `omenmon`, luego `nbfc`, y por ultimo `command`.
 - Genera un ejecutable `AmenGamingHub.exe` en la raiz del proyecto.
 
 ## Estado del proyecto
@@ -29,6 +30,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 - `amen_hub/backend/telemetry.py`: lectura de temperatura.
 - `amen_hub/config.py`: carga, sanitizacion y persistencia de configuracion.
 - `amen_hub/version.py`: version de la aplicacion.
+- `CHANGELOG.md`: historial resumido por version.
 - `build.ps1`: build del `.exe` en la raiz del proyecto.
 - `bump_version.py`: incremento automatizado de version patch.
 - `.github/workflows/release.yml`: build y release al hacer push a `main`.
@@ -144,6 +146,7 @@ Los valores persistentes viven en `config.json`. Campos relevantes:
 - `fan_backend`
 - `fan_command_cpu`
 - `fan_command_gpu`
+- `omenmon_executable`
 - `nbfc_profile`
 - `nbfc_executable`
 - `nbfc_autodiscover_profile`
@@ -206,6 +209,13 @@ El build usa hooks de PyInstaller y empaqueta Tcl/Tk. Recompila con:
 - Verifica el estado de `NbfcService`.
 - Usa el boton `Diagnostico NBFC`.
 - Si el modelo es Victus reciente y NBFC sigue fallando, prioriza la via HP/OMEN.
+
+### OmenMon muestra excepciones o no aplica niveles
+
+- Ejecuta la app compilada como Administrador.
+- Usa backend `auto` u `omenmon` para evitar seguir forzando `nbfc` en Victus/OMEN.
+- Verifica que `tools/omenmon/OmenMon.exe` exista.
+- La app normaliza `OmenMon.xml` en local para Victus/OMEN con `BiosErrorReporting=false`, `FanLevelNeedManual=true` y `FanLevelUseEc=true`.
 
 ### No se puede recompilar el `.exe`
 

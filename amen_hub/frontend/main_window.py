@@ -196,7 +196,7 @@ class MainWindow:
         self.backend_combo = ttk.Combobox(
             options,
             textvariable=self.backend_var,
-            values=["auto", "nbfc", "command", "mock"],
+            values=["auto", "omenmon", "nbfc", "command", "mock"],
             state="readonly",
             width=12,
         )

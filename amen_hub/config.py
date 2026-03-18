@@ -21,6 +21,7 @@ class AppConfig:
     fan_command_cpu: str = ""
     fan_command_gpu: str = ""
     telemetry_interval_seconds: int = 2
+    omenmon_executable: str = "auto"
     nbfc_profile: str = "HP OMEN Notebook PC 15"
     nbfc_executable: str = "auto"
     nbfc_autodiscover_profile: bool = True
@@ -64,10 +65,11 @@ class ConfigManager:
         safe["window_geometry"] = str(safe["window_geometry"])
         safe["app_password"] = str(safe["app_password"])
         safe["fan_backend"] = str(safe["fan_backend"]).strip().lower()
-        if safe["fan_backend"] not in {"auto", "mock", "nbfc", "command"}:
+        if safe["fan_backend"] not in {"auto", "mock", "nbfc", "omenmon", "command"}:
             safe["fan_backend"] = "auto"
         safe["fan_command_cpu"] = str(safe["fan_command_cpu"])
         safe["fan_command_gpu"] = str(safe["fan_command_gpu"])
+        safe["omenmon_executable"] = str(safe["omenmon_executable"])
         safe["nbfc_profile"] = str(safe["nbfc_profile"])
         safe["nbfc_executable"] = str(safe["nbfc_executable"])
         safe["nbfc_autodiscover_profile"] = bool(safe["nbfc_autodiscover_profile"])

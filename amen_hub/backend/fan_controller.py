@@ -43,6 +43,15 @@ class FanController:
         return self.backend_name
 
 
+class UnavailableFanController(FanController):
+    def __init__(self, backend_name: str, message: str) -> None:
+        self.backend_name = f"{backend_name} (no disponible)"
+        self._message = message
+
+    def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
+        return FanApplyResult(False, self._message)
+
+
 class MockHPVictusFanController(FanController):
     backend_name = "mock"
 
@@ -64,6 +73,143 @@ class MockHPVictusFanController(FanController):
             ok=True,
             message=f"Velocidades aplicadas (modo seguro/simulacion): CPU {cpu}% | GPU {gpu}%",
         )
+
+
+class OmenMonFanController(FanController):
+    backend_name = "omenmon"
+
+    def __init__(self, executable: str = "OmenMon.exe") -> None:
+        self.executable = str(Path(executable).resolve())
+        self._lock = Lock()
+        self._no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    @property
+    def executable_path(self) -> Path:
+        return Path(self.executable)
+
+    @property
+    def config_path(self) -> Path:
+        return self.executable_path.with_name("OmenMon.xml")
+
+    def _run(self, args: list[str], timeout: int = 20) -> tuple[bool, str]:
+        cmdline = subprocess.list2cmdline([self.executable, *args])
+        try:
+            proc = subprocess.run(
+                ["cmd.exe", "/d", "/s", "/c", cmdline],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                cwd=str(self.executable_path.parent),
+                creationflags=self._no_window_flag,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"OmenMon excedio el timeout de {timeout}s"
+        except OSError as ex:
+            return False, str(ex)
+
+        output = (proc.stdout or "").strip()
+        error = (proc.stderr or "").strip()
+        combined = "\n".join(part for part in (output, error) if part).strip()
+        lowered = combined.lower()
+        error_tokens = ("exception:", "error", "failed", "access denied", "acceso denegado")
+        ok = proc.returncode == 0 and not any(token in lowered for token in error_tokens)
+        return ok, combined
+
+    def _ensure_local_config(self) -> None:
+        if not self.config_path.exists():
+            return
+
+        text = self.config_path.read_text(encoding="utf-8")
+        replacements = {
+            "BiosErrorReporting": "false",
+            "FanLevelNeedManual": "true",
+            "FanLevelUseEc": "true",
+        }
+        changed = False
+
+        for tag, value in replacements.items():
+            updated, count = re.subn(
+                rf"(<{tag}>\s*)([^<]+)(\s*</{tag}>)",
+                rf"\g<1>{value}\g<3>",
+                text,
+                count=1,
+            )
+            if count and updated != text:
+                changed = True
+                text = updated
+
+        if changed:
+            self.config_path.write_text(text, encoding="utf-8")
+
+    def _fan_level_bounds(self) -> tuple[int, int]:
+        default_min = 20
+        default_max = 55
+        if not self.config_path.exists():
+            return default_min, default_max
+
+        text = self.config_path.read_text(encoding="utf-8", errors="ignore")
+        min_match = re.search(r"<FanLevelMin>\s*(\d+)\s*</FanLevelMin>", text)
+        max_match = re.search(r"<FanLevelMax>\s*(\d+)\s*</FanLevelMax>", text)
+        min_level = int(min_match.group(1)) if min_match else default_min
+        max_level = int(max_match.group(1)) if max_match else default_max
+
+        min_level = max(0, min(min_level, 255))
+        max_level = max(min_level, min(max_level, 255))
+        return min_level, max_level
+
+    def _percent_to_level(self, percent: int) -> int:
+        value = int(min(max(percent, 0), 100))
+        if value <= 0:
+            return 0
+        min_level, max_level = self._fan_level_bounds()
+        if max_level <= min_level:
+            return max_level
+        return int(round(min_level + ((max_level - min_level) * (value / 100.0))))
+
+    def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
+        if not is_running_as_admin():
+            return FanApplyResult(
+                False,
+                "Control real requiere ejecutar como Administrador (OmenMon/HP WMI).",
+            )
+
+        cpu = int(min(max(cpu_percent, 0), 100))
+        gpu = int(min(max(gpu_percent, 0), 100))
+
+        with self._lock:
+            self._ensure_local_config()
+
+            if cpu == 0 and gpu == 0:
+                ok, out = self._run(["-Bios", "FanMode=LegacyDefault"])
+                if not ok:
+                    return FanApplyResult(
+                        False,
+                        f"OmenMon no pudo restaurar el modo termico por defecto: {out or 'sin detalle'}",
+                    )
+                return FanApplyResult(True, "OmenMon restablecio el modo termico por defecto")
+
+            cpu_level = self._percent_to_level(cpu)
+            gpu_level = self._percent_to_level(gpu)
+
+            ok, out = self._run(["-Bios", f"FanLevel={cpu_level},{gpu_level}"])
+            if not ok:
+                fallback_level = max(cpu_level, gpu_level)
+                ok, out = self._run(["-Bios", f"FanLevel={fallback_level}"])
+                if not ok:
+                    return FanApplyResult(False, f"OmenMon no pudo fijar velocidad: {out or 'sin detalle'}")
+                return FanApplyResult(
+                    True,
+                    (
+                        "Velocidad aplicada por OmenMon (canal unico): "
+                        f"CPU {cpu}%->{fallback_level} | GPU {gpu}%->{fallback_level}"
+                    ),
+                )
+
+            return FanApplyResult(
+                True,
+                f"Velocidad aplicada por OmenMon: CPU {cpu}%->{cpu_level} | GPU {gpu}%->{gpu_level}",
+            )
 
 
 class NBFCFanController(FanController):
@@ -506,23 +652,38 @@ class CommandTemplateFanController(FanController):
 
 
 def build_fan_controller(config: AppConfig) -> FanController:
+    omenmon_path = find_omenmon_executable(config.omenmon_executable)
+    nbfc_path = find_nbfc_executable(config.nbfc_executable)
+
     if config.fan_backend == "mock":
         return MockHPVictusFanController()
 
+    if config.fan_backend == "omenmon":
+        if omenmon_path:
+            return OmenMonFanController(omenmon_path)
+        return UnavailableFanController(
+            "omenmon",
+            "OmenMon.exe no encontrado. Ejecuta install_omenmon_local.ps1 o configura omenmon_executable.",
+        )
+
     if config.fan_backend == "nbfc":
-        nbfc_path = find_nbfc_executable(config.nbfc_executable)
         if nbfc_path:
             return NBFCFanController(
                 nbfc_path,
                 profile=config.nbfc_profile,
                 autodiscover_profile=config.nbfc_autodiscover_profile,
             )
-        return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
+        return UnavailableFanController(
+            "nbfc",
+            "nbfc.exe no encontrado. Instala NBFC o ajusta nbfc_executable.",
+        )
 
     if config.fan_backend == "command":
         return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
 
-    nbfc_path = find_nbfc_executable(config.nbfc_executable)
+    if omenmon_path:
+        return OmenMonFanController(omenmon_path)
+
     if nbfc_path:
         return NBFCFanController(
             nbfc_path,
@@ -530,7 +691,35 @@ def build_fan_controller(config: AppConfig) -> FanController:
             autodiscover_profile=config.nbfc_autodiscover_profile,
         )
 
-    return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
+    if config.fan_command_cpu.strip() and config.fan_command_gpu.strip():
+        return CommandTemplateFanController(config.fan_command_cpu, config.fan_command_gpu)
+
+    return UnavailableFanController(
+        "auto",
+        "No se encontro un backend compatible. Instala OmenMon o NBFC, o configura fan_command_cpu/fan_command_gpu.",
+    )
+
+
+def find_omenmon_executable(config_value: str = "auto") -> str | None:
+    if config_value and config_value.strip().lower() != "auto":
+        custom = Path(config_value.strip())
+        if custom.exists():
+            return str(custom)
+
+    base = get_base_path()
+    local_candidates = [
+        base / "OmenMon.exe",
+        base / "tools" / "omenmon" / "OmenMon.exe",
+    ]
+    for candidate in local_candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    from_path = shutil.which("OmenMon.exe")
+    if from_path:
+        return from_path
+
+    return None
 
 
 def find_nbfc_executable(config_value: str = "auto") -> str | None:
