@@ -40,6 +40,9 @@ class FanController:
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         raise NotImplementedError
 
+    def restore_automatic_control(self) -> FanApplyResult:
+        return FanApplyResult(True, f"{self.describe()}: sin restauracion explicita")
+
     def describe(self) -> str:
         return self.backend_name
 
@@ -50,6 +53,9 @@ class UnavailableFanController(FanController):
         self._message = message
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
+        return FanApplyResult(False, self._message)
+
+    def restore_automatic_control(self) -> FanApplyResult:
         return FanApplyResult(False, self._message)
 
 
@@ -74,6 +80,9 @@ class MockHPVictusFanController(FanController):
             ok=True,
             message=f"Velocidades aplicadas (modo seguro/simulacion): CPU {cpu}% | GPU {gpu}%",
         )
+
+    def restore_automatic_control(self) -> FanApplyResult:
+        return FanApplyResult(True, "Modo seguro/simulacion: control automatico restaurado")
 
 
 class OmenMonFanController(FanController):
@@ -208,6 +217,23 @@ class OmenMonFanController(FanController):
                 True,
                 f"Velocidad aplicada por OmenMon: CPU {cpu}%->{cpu_level} | GPU {gpu}%->{gpu_level}",
             )
+
+    def restore_automatic_control(self) -> FanApplyResult:
+        if not is_running_as_admin():
+            return FanApplyResult(
+                False,
+                "Restaurar modo automatico requiere ejecutar como Administrador (OmenMon/HP WMI).",
+            )
+
+        with self._lock:
+            self._ensure_local_config()
+            ok, out = self._run(["-Bios", "FanMode=LegacyDefault"])
+            if not ok:
+                return FanApplyResult(
+                    False,
+                    f"OmenMon no pudo restaurar el modo automatico: {out or 'sin detalle'}",
+                )
+            return FanApplyResult(True, "OmenMon restablecio el modo automatico del sistema")
 
 
 class NBFCFanController(FanController):
@@ -501,6 +527,27 @@ class NBFCFanController(FanController):
                 f"Velocidad aplicada por NBFC: solicitado {requested}% | target {target:.1f}% | actual {current or 0:.1f}%",
             )
 
+    def restore_automatic_control(self) -> FanApplyResult:
+        if not is_running_as_admin():
+            return FanApplyResult(
+                False,
+                "Restaurar modo automatico requiere ejecutar como Administrador (NBFC service/WMI).",
+            )
+
+        with self._lock:
+            if not self._ensure_service_ready():
+                return FanApplyResult(False, "NBFC service no queda operativo para restaurar modo automatico.")
+
+            ok, out = self._run(["config", "--set", self.profile])
+            if not ok:
+                return FanApplyResult(False, f"NBFC no pudo fijar perfil para restaurar auto: {out or 'sin detalle'}")
+
+            ok, out = self._run(["set", "--fan", "0", "--auto"], timeout=7)
+            if not ok:
+                return FanApplyResult(False, f"NBFC no pudo restaurar auto-control: {out or 'sin detalle'}")
+
+            return FanApplyResult(True, "NBFC restablecio el auto-control del ventilador")
+
     def diagnosticar_nbfc(self) -> str:
         service_info = self._query_service_info()
         process_pids = self._list_service_process_pids()
@@ -640,6 +687,9 @@ class CommandTemplateFanController(FanController):
                     return FanApplyResult(False, f"Comando fallo: {stderr}")
 
         return FanApplyResult(True, f"Velocidades aplicadas por comando: CPU {cpu}% | GPU {gpu}%")
+
+    def restore_automatic_control(self) -> FanApplyResult:
+        return FanApplyResult(True, "Backend command: sin restauracion automatica explicita")
 
 
 def build_fan_controller(config: AppConfig) -> FanController:

@@ -6,6 +6,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 
 - Muestra temperatura CPU/GPU en una interfaz Tkinter con notacion `°C`.
 - Aplica velocidades de ventilador desde una GUI sin bloquear el hilo principal.
+- Permite `Aplicar en vivo` para que los cambios de los diales se reflejen inmediatamente en los ventiladores.
 - Refresca la telemetria al abrir y luego en vivo segun `telemetry_interval_seconds`.
 - Incluye `Modo auto termico` para enfriar CPU/GPU segun la temperatura del equipo.
 - Guarda configuracion persistente en `config.json`.
@@ -134,6 +135,12 @@ Backend de simulacion seguro para validar UI, threading y persistencia.
 - Deshabilita sliders y aplicacion manual mientras esta activo.
 - Restaura los ultimos valores manuales cuando se desactiva.
 
+### Aplicar En Vivo
+
+- Si esta activado, mover los diales aplica cambios sin pulsar `Aplicar`.
+- Usa una espera corta para no lanzar demasiadas escrituras mientras sigues arrastrando el slider.
+- Si `Modo auto termico` esta activo, `Aplicar en vivo` queda deshabilitado.
+
 ### Alternativa HP Victus / OMEN
 
 En varios modelos Victus recientes, `NBFC` no es la via mas confiable. Si tu equipo ya tiene `OMEN Gaming Hub`, `HP Omen Driver` y `HP Application Driver`, la ruta HP/OMEN suele ser mejor.
@@ -153,6 +160,8 @@ Los valores persistentes viven en `config.json`. Campos relevantes:
 - `cpu_fan_percent`
 - `gpu_fan_percent`
 - `fan_auto_mode`
+- `live_apply_enabled`
+- `restore_auto_on_exit`
 - `fan_backend`
 - `fan_command_cpu`
 - `fan_command_gpu`
@@ -227,6 +236,7 @@ El build usa hooks de PyInstaller y empaqueta Tcl/Tk. Recompila con:
 - Usa backend `auto` u `omenmon` para evitar seguir forzando `nbfc` en Victus/OMEN.
 - Verifica que `tools/omenmon/OmenMon.exe` exista.
 - La app normaliza `OmenMon.xml` en local para Victus/OMEN con `BiosErrorReporting=false`, `FanLevelNeedManual=true` y `FanLevelUseEc=true`.
+- Si `Volver a auto al salir` esta activado, la app intenta restaurar el control automatico del sistema antes de cerrarse.
 
 ### La telemetria no muestra CPU o no parece actualizar
 

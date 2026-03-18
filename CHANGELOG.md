@@ -1,5 +1,12 @@
 # Changelog
 
+## V0.0.19 - 2026-03-17
+
+- Se agrega `Aplicar en vivo` para que los ventiladores se ajusten al mover los diales, sin usar el boton `Aplicar`.
+- La aplicacion en vivo usa debounce para evitar saturar el hardware con cambios continuos mientras arrastras los sliders.
+- Se agrega `Volver a auto al salir` para restaurar el control automatico del sistema antes de cerrar la app.
+- El backend implementa restauracion explicita de auto-control para `OmenMon` y `NBFC`.
+
 ## V0.0.18 - 2026-03-17
 
 - Se agrega `Modo auto termico` para ajustar ventiladores segun la temperatura CPU/GPU.

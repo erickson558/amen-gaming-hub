@@ -43,10 +43,14 @@ class MainWindow:
         self._countdown_remaining = 0
         self._countdown_job: str | None = None
         self._telemetry_job: str | None = None
+        self._live_apply_job: str | None = None
         self._telemetry_inflight = False
+        self._live_apply_inflight = False
         self._suspend_live_change = False
         self._manual_cpu_percent = int(self.config_manager.config.cpu_fan_percent)
         self._manual_gpu_percent = int(self.config_manager.config.gpu_fan_percent)
+        self._pending_live_apply_targets: tuple[int, int] | None = None
+        self._last_live_apply_targets: tuple[int, int] | None = None
         self._auto_mode_enabled = bool(self.config_manager.config.fan_auto_mode)
         self._last_auto_targets: tuple[int, int] | None = None
         self._last_auto_apply_at = 0.0
@@ -106,6 +110,8 @@ class MainWindow:
         self.cpu_var = tk.IntVar(value=cfg.cpu_fan_percent)
         self.gpu_var = tk.IntVar(value=cfg.gpu_fan_percent)
         self.auto_fan_var = tk.BooleanVar(value=cfg.fan_auto_mode)
+        self.live_apply_var = tk.BooleanVar(value=cfg.live_apply_enabled)
+        self.restore_auto_on_exit_var = tk.BooleanVar(value=cfg.restore_auto_on_exit)
         self.autostart_var = tk.BooleanVar(value=cfg.autostart_process)
         self.autoclose_enabled_var = tk.BooleanVar(value=cfg.autoclose_enabled)
         self.autoclose_seconds_var = tk.IntVar(value=cfg.autoclose_seconds)
@@ -203,6 +209,22 @@ class MainWindow:
             command=self._on_auto_mode_changed,
         )
         self.auto_fan_check.grid(row=0, column=5, sticky="w", padx=(0, 10), pady=6)
+
+        self.live_apply_check = ttk.Checkbutton(
+            options,
+            text="Aplicar en vivo",
+            variable=self.live_apply_var,
+            command=self._on_live_apply_option_changed,
+        )
+        self.live_apply_check.grid(row=1, column=5, sticky="w", padx=(0, 10), pady=6)
+
+        self.restore_auto_check = ttk.Checkbutton(
+            options,
+            text="Volver a auto al salir",
+            variable=self.restore_auto_on_exit_var,
+            command=self._on_live_change,
+        )
+        self.restore_auto_check.grid(row=2, column=5, sticky="w", padx=(0, 10), pady=(6, 10))
 
         self.autoclose_check = ttk.Checkbutton(
             options,
@@ -325,6 +347,9 @@ class MainWindow:
             if msg == "__telemetry_done__":
                 self._telemetry_inflight = False
                 continue
+            if isinstance(msg, tuple) and msg[0] == "__live_apply_done__":
+                self._handle_live_apply_done(msg[1], msg[2], msg[3], msg[4])
+                continue
             if isinstance(msg, tuple) and msg[0] == "__auto__":
                 self._handle_auto_update(msg[1], msg[2], msg[3])
                 continue
@@ -385,6 +410,7 @@ class MainWindow:
         self._update_value_labels()
         self._save_config()
         self._ensure_countdown_state()
+        self._schedule_live_apply()
 
     def _update_value_labels(self) -> None:
         self.cpu_value_label.configure(text=f"{int(self.cpu_var.get())}%")
@@ -412,6 +438,7 @@ class MainWindow:
         self._last_auto_targets = None
         self._last_auto_apply_at = 0.0
         self._last_auto_status = ""
+        self._cancel_live_apply()
         self._refresh_auto_mode_ui()
         if self._auto_mode_enabled:
             self._set_status("Modo auto termico activo. La app ajustara ventiladores segun la temperatura.")
@@ -423,16 +450,28 @@ class MainWindow:
         self._save_config()
         self._set_status("Modo auto termico desactivado. Controles manuales restaurados.")
 
+    def _on_live_apply_option_changed(self) -> None:
+        self._save_config()
+        self._refresh_auto_mode_ui()
+        if self.live_apply_var.get():
+            self._set_status("Aplicacion en vivo activada.")
+            self._schedule_live_apply()
+            return
+        self._cancel_live_apply()
+        self._set_status("Aplicacion en vivo desactivada.")
+
     def _refresh_auto_mode_ui(self) -> None:
         auto_enabled = bool(self.auto_fan_var.get())
         if auto_enabled:
             self.cpu_scale.state(["disabled"])
             self.gpu_scale.state(["disabled"])
             self.apply_button.configure(state="disabled")
+            self.live_apply_check.state(["disabled"])
             return
 
         self.cpu_scale.state(["!disabled"])
         self.gpu_scale.state(["!disabled"])
+        self.live_apply_check.state(["!disabled"])
         self.apply_button.configure(state="normal")
 
     def _save_config(self) -> None:
@@ -446,6 +485,8 @@ class MainWindow:
             cpu_fan_percent=int(self._manual_cpu_percent),
             gpu_fan_percent=int(self._manual_gpu_percent),
             fan_auto_mode=bool(self.auto_fan_var.get()),
+            live_apply_enabled=bool(self.live_apply_var.get()),
+            restore_auto_on_exit=bool(self.restore_auto_on_exit_var.get()),
             autostart_process=bool(self.autostart_var.get()),
             autoclose_enabled=bool(self.autoclose_enabled_var.get()),
             autoclose_seconds=autoclose_secs,
@@ -468,27 +509,37 @@ class MainWindow:
 
         thread = threading.Thread(
             target=self._worker_apply,
-            args=(cpu, gpu),
+            args=(cpu, gpu, False),
             name="FanApplyWorker",
             daemon=True,
         )
         thread.start()
 
-    def _worker_apply(self, cpu: int, gpu: int) -> None:
+    def _worker_apply(self, cpu: int, gpu: int, live_apply: bool = False) -> None:
         try:
             result = self.controller.apply_fan_speeds(cpu, gpu)
             now = datetime.now().strftime("%H:%M:%S")
             if result.ok:
                 self.logger.info(result.message)
-                self.ui_queue.put(f"{result.message} | {now}")
+                if live_apply:
+                    self.ui_queue.put(("__live_apply_done__", cpu, gpu, True, f"{result.message} | {now}"))
+                else:
+                    self.ui_queue.put(f"{result.message} | {now}")
             else:
                 self.logger.warning(result.message)
-                self.ui_queue.put(f"No aplicado: {result.message} | {now}")
+                if live_apply:
+                    self.ui_queue.put(("__live_apply_done__", cpu, gpu, False, f"No aplicado: {result.message} | {now}"))
+                else:
+                    self.ui_queue.put(f"No aplicado: {result.message} | {now}")
         except Exception as ex:  # noqa: BLE001
             self.logger.exception("Error applying fan speeds: %s", ex)
-            self.ui_queue.put(f"Error inesperado: {ex}")
+            if live_apply:
+                self.ui_queue.put(("__live_apply_done__", cpu, gpu, False, f"Error inesperado: {ex}"))
+            else:
+                self.ui_queue.put(f"Error inesperado: {ex}")
         finally:
-            self.ui_queue.put("__enable_apply__")
+            if not live_apply:
+                self.ui_queue.put("__enable_apply__")
 
     def _schedule_telemetry(self) -> None:
         interval = max(1, int(self.config_manager.config.telemetry_interval_seconds))
@@ -547,6 +598,51 @@ class MainWindow:
             self._set_display_fan_values(cpu_percent, gpu_percent)
         if status_text:
             self._set_status(status_text)
+
+    def _schedule_live_apply(self) -> None:
+        if self.auto_fan_var.get() or not self.live_apply_var.get():
+            return
+
+        self._pending_live_apply_targets = (int(self.cpu_var.get()), int(self.gpu_var.get()))
+        if self._live_apply_job is not None:
+            self.root.after_cancel(self._live_apply_job)
+        self._live_apply_job = self.root.after(180, self._flush_live_apply)
+
+    def _cancel_live_apply(self) -> None:
+        if self._live_apply_job is not None:
+            self.root.after_cancel(self._live_apply_job)
+            self._live_apply_job = None
+        self._pending_live_apply_targets = None
+
+    def _flush_live_apply(self) -> None:
+        self._live_apply_job = None
+        if self.auto_fan_var.get() or not self.live_apply_var.get() or self._live_apply_inflight:
+            return
+
+        targets = self._pending_live_apply_targets
+        if targets is None or targets == self._last_live_apply_targets:
+            return
+
+        self._live_apply_inflight = True
+        thread = threading.Thread(
+            target=self._worker_apply,
+            args=(targets[0], targets[1], True),
+            name="LiveFanApplyWorker",
+            daemon=True,
+        )
+        thread.start()
+
+    def _handle_live_apply_done(self, cpu: int, gpu: int, ok: bool, message: str) -> None:
+        self._live_apply_inflight = False
+        if ok:
+            self._last_live_apply_targets = (cpu, gpu)
+        self._set_status(message)
+
+        if self.auto_fan_var.get() or not self.live_apply_var.get():
+            return
+
+        if self._pending_live_apply_targets is not None and self._pending_live_apply_targets != self._last_live_apply_targets:
+            self._schedule_live_apply()
 
     def _evaluate_auto_mode(self, cpu_c: float | None, gpu_c: float | None) -> tuple[int | None, int | None, str | None] | None:
         if not self._auto_mode_enabled:
@@ -677,9 +773,20 @@ class MainWindow:
         ttk.Button(top, text="Cerrar", command=top.destroy).pack(pady=(0, 12))
 
     def _on_exit(self) -> None:
+        self._cancel_live_apply()
         if self._telemetry_job is not None:
             self.root.after_cancel(self._telemetry_job)
             self._telemetry_job = None
+
+        if self.restore_auto_on_exit_var.get():
+            try:
+                result = self.controller.restore_automatic_control()
+                if result.ok:
+                    self.logger.info(result.message)
+                else:
+                    self.logger.warning(result.message)
+            except Exception as ex:  # noqa: BLE001
+                self.logger.exception("Error restoring automatic control on exit: %s", ex)
 
         self._save_config()
         self.logger.info("Application exit requested")

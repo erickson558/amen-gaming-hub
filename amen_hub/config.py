@@ -13,6 +13,8 @@ class AppConfig:
     cpu_fan_percent: int = 50
     gpu_fan_percent: int = 50
     fan_auto_mode: bool = False
+    live_apply_enabled: bool = True
+    restore_auto_on_exit: bool = True
     autostart_process: bool = False
     autoclose_enabled: bool = False
     autoclose_seconds: int = 60
@@ -62,6 +64,8 @@ class ConfigManager:
         safe["autoclose_seconds"] = int(min(max(int(safe["autoclose_seconds"]), 5), 3600))
         safe["telemetry_interval_seconds"] = int(min(max(int(safe["telemetry_interval_seconds"]), 1), 30))
         safe["fan_auto_mode"] = bool(safe["fan_auto_mode"])
+        safe["live_apply_enabled"] = bool(safe["live_apply_enabled"])
+        safe["restore_auto_on_exit"] = bool(safe["restore_auto_on_exit"])
         safe["autostart_process"] = bool(safe["autostart_process"])
         safe["autoclose_enabled"] = bool(safe["autoclose_enabled"])
         safe["window_geometry"] = str(safe["window_geometry"])
