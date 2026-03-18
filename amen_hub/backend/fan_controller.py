@@ -40,6 +40,9 @@ class FanController:
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         raise NotImplementedError
 
+    def requires_admin_for_control(self) -> bool:
+        return False
+
     def restore_automatic_control(self) -> FanApplyResult:
         return FanApplyResult(True, f"{self.describe()}: sin restauracion explicita")
 
@@ -173,6 +176,9 @@ class OmenMonFanController(FanController):
         if max_level <= min_level:
             return max_level
         return int(round(min_level + ((max_level - min_level) * (value / 100.0))))
+
+    def requires_admin_for_control(self) -> bool:
+        return True
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         if not is_running_as_admin():
@@ -463,6 +469,9 @@ class NBFCFanController(FanController):
                     target_value = None
 
         return auto_value, current_value, target_value
+
+    def requires_admin_for_control(self) -> bool:
+        return True
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
         if not is_running_as_admin():

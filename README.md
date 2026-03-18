@@ -74,6 +74,7 @@ python app.py
 ```
 
 Para control real de hardware, ejecuta la app como Administrador.
+Si el backend activo requiere elevacion y abres la app sin permisos, la UI bloquea los controles de ventilador y muestra una advertencia visible en pantalla.
 
 ## Compilacion del EXE
 
@@ -134,12 +135,14 @@ Backend de simulacion seguro para validar UI, threading y persistencia.
 - Usa una curva balanceada para comportarse parecido al control termico normal del equipo.
 - Deshabilita sliders y aplicacion manual mientras esta activo.
 - Restaura los ultimos valores manuales cuando se desactiva.
+- Si la app no esta elevada y el backend necesita Administrador, el modo auto queda bloqueado para evitar una activacion a medias.
 
 ### Aplicar En Vivo
 
 - Si esta activado, mover los diales aplica cambios sin pulsar `Aplicar`.
 - Usa una espera corta para no lanzar demasiadas escrituras mientras sigues arrastrando el slider.
 - Si `Modo auto termico` esta activo, `Aplicar en vivo` queda deshabilitado.
+- Si el backend activo requiere Administrador y la app no esta elevada, `Aplicar en vivo` tambien queda bloqueado.
 
 ### Alternativa HP Victus / OMEN
 
@@ -237,6 +240,12 @@ El build usa hooks de PyInstaller y empaqueta Tcl/Tk. Recompila con:
 - Verifica que `tools/omenmon/OmenMon.exe` exista.
 - La app normaliza `OmenMon.xml` en local para Victus/OMEN con `BiosErrorReporting=false`, `FanLevelNeedManual=true` y `FanLevelUseEc=true`.
 - Si `Volver a auto al salir` esta activado, la app intenta restaurar el control automatico del sistema antes de cerrarse.
+
+### La UI deja mover opciones pero nada aplica
+
+- Verifica si abriste `python app.py` desde una terminal no elevada.
+- Cuando el backend activo es `omenmon` o `nbfc`, la app bloquea los controles si no detecta permisos de Administrador.
+- En build normal, `AmenGamingHub.exe` ya solicita elevacion por `--uac-admin`.
 
 ### La telemetria no muestra CPU o no parece actualizar
 

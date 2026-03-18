@@ -72,12 +72,7 @@ class MainWindow:
         self.root.after(100, self._drain_queue)
         self.root.after(250, self._ensure_countdown_state)
         self._telemetry_async()
-        if not is_running_as_admin():
-            self._set_status(
-                f"Backend activo: {self.controller.describe()} | Ejecuta como Administrador para control real y CPU temp",
-            )
-        else:
-            self._set_status(f"Backend activo: {self.controller.describe()}")
+        self._set_status(self._backend_status_message())
 
         if self.autostart_var.get():
             self._apply_async()
@@ -94,6 +89,7 @@ class MainWindow:
         style.configure("Title.TLabel", background="#0a0f14", foreground="#e6f7ff", font=("Segoe UI Semibold", 23))
         style.configure("SubTitle.TLabel", background="#0a0f14", foreground="#6fb7de", font=("Segoe UI", 11))
         style.configure("Value.TLabel", background="#121a22", foreground="#9ee7ff", font=("Consolas", 13, "bold"))
+        style.configure("Warning.TLabel", background="#121a22", foreground="#ffb347", font=("Segoe UI Semibold", 10))
         style.configure("Status.TLabel", background="#0f141b", foreground="#7de3b6", borderwidth=1, relief="solid")
         style.configure("TLabel", background="#121a22", foreground="#d9e8ff")
         style.configure("TCheckbutton", background="#121a22", foreground="#d9e8ff")
@@ -119,6 +115,7 @@ class MainWindow:
         self.backend_var = tk.StringVar(value=cfg.fan_backend)
         self.nbfc_profile_var = tk.StringVar(value=cfg.nbfc_profile)
         self.show_password_var = tk.BooleanVar(value=False)
+        self.permission_hint_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Listo")
         self.cpu_temp_var = tk.StringVar(value="--.- °C")
         self.gpu_temp_var = tk.StringVar(value="--.- °C")
@@ -266,6 +263,16 @@ class MainWindow:
         self.toggle_pass_button = ttk.Button(options, text="Mostrar", command=self._toggle_password)
         self.toggle_pass_button.grid(row=2, column=2, sticky="w", padx=(0, 10), pady=(6, 10))
 
+        self.permission_hint_label = ttk.Label(
+            options,
+            textvariable=self.permission_hint_var,
+            style="Warning.TLabel",
+            wraplength=860,
+            justify="left",
+        )
+        self.permission_hint_label.grid(row=3, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 10))
+        self.permission_hint_label.grid_remove()
+
         options.columnconfigure(1, weight=1)
         options.columnconfigure(4, weight=1)
 
@@ -309,6 +316,10 @@ class MainWindow:
 
 
     def _repair_nbfc(self) -> None:
+        if not is_running_as_admin():
+            self._set_status("Reparar NBFC requiere ejecutar la app como Administrador.")
+            return
+
         self.repair_button.configure(state="disabled")
         self._set_status("Intentando reparar NBFC...")
 
@@ -396,9 +407,44 @@ class MainWindow:
         self.nbfc_profile_var.trace_add("write", lambda *_: self._on_live_change())
 
     def _load_state(self) -> None:
+        self._enforce_permission_constraints()
         self._update_value_labels()
         self._refresh_auto_mode_ui()
         self._save_config()
+
+    def _controls_blocked_by_permissions(self) -> bool:
+        return self.controller.requires_admin_for_control() and not is_running_as_admin()
+
+    def _permission_status_message(self) -> str:
+        return f"Control bloqueado: el backend {self.controller.describe()} requiere abrir la app como Administrador."
+
+    def _backend_status_message(self, prefix: str = "Backend activo") -> str:
+        message = f"{prefix}: {self.controller.describe()}"
+        if self._controls_blocked_by_permissions():
+            return f"{message} | Control bloqueado: abre la app como Administrador"
+        if not is_running_as_admin():
+            return f"{message} | Sin Administrador: algunas lecturas pueden ser limitadas"
+        return message
+
+    def _enforce_permission_constraints(self) -> None:
+        if not self._controls_blocked_by_permissions():
+            return
+
+        self._cancel_live_apply()
+        self._live_apply_inflight = False
+        self._pending_live_apply_targets = None
+
+        if self.auto_fan_var.get() or self._auto_mode_enabled:
+            self._suspend_live_change = True
+            try:
+                self.auto_fan_var.set(False)
+            finally:
+                self._suspend_live_change = False
+
+        self._auto_mode_enabled = False
+        self._last_auto_targets = None
+        self._last_auto_apply_at = 0.0
+        self._last_auto_status = ""
 
     def _on_live_change(self) -> None:
         if self._suspend_live_change:
@@ -429,11 +475,20 @@ class MainWindow:
         self._omenmon_path = find_omenmon_executable(self.config_manager.config.omenmon_executable)
         self.controller = build_fan_controller(self.config_manager.config)
         self.telemetry = TemperatureService(self._nbfc_path, self._omenmon_path)
-        self._set_status(f"Backend cambiado a: {self.controller.describe()}")
+        self._enforce_permission_constraints()
+        self._refresh_auto_mode_ui()
+        self._set_status(self._backend_status_message("Backend cambiado"))
         if self.auto_fan_var.get():
             self._telemetry_async()
 
     def _on_auto_mode_changed(self) -> None:
+        if self._controls_blocked_by_permissions():
+            self._enforce_permission_constraints()
+            self._refresh_auto_mode_ui()
+            self._save_config()
+            self._set_status(self._permission_status_message())
+            return
+
         self._auto_mode_enabled = bool(self.auto_fan_var.get())
         self._last_auto_targets = None
         self._last_auto_apply_at = 0.0
@@ -453,6 +508,9 @@ class MainWindow:
     def _on_live_apply_option_changed(self) -> None:
         self._save_config()
         self._refresh_auto_mode_ui()
+        if self._controls_blocked_by_permissions():
+            self._set_status(self._permission_status_message())
+            return
         if self.live_apply_var.get():
             self._set_status("Aplicacion en vivo activada.")
             self._schedule_live_apply()
@@ -461,7 +519,26 @@ class MainWindow:
         self._set_status("Aplicacion en vivo desactivada.")
 
     def _refresh_auto_mode_ui(self) -> None:
+        blocked = self._controls_blocked_by_permissions()
         auto_enabled = bool(self.auto_fan_var.get())
+        if blocked:
+            self.permission_hint_var.set(self._permission_status_message())
+            self.permission_hint_label.grid()
+            self.cpu_scale.state(["disabled"])
+            self.gpu_scale.state(["disabled"])
+            self.apply_button.configure(state="disabled")
+            self.auto_fan_check.state(["disabled"])
+            self.live_apply_check.state(["disabled"])
+            self.restore_auto_check.state(["disabled"])
+            self.repair_button.configure(state="disabled")
+            return
+
+        self.permission_hint_var.set("")
+        self.permission_hint_label.grid_remove()
+        self.auto_fan_check.state(["!disabled"])
+        self.restore_auto_check.state(["!disabled"])
+        self.repair_button.configure(state="normal" if is_running_as_admin() else "disabled")
+
         if auto_enabled:
             self.cpu_scale.state(["disabled"])
             self.gpu_scale.state(["disabled"])
@@ -497,6 +574,10 @@ class MainWindow:
         )
 
     def _apply_async(self) -> None:
+        if self._controls_blocked_by_permissions():
+            self._set_status(self._permission_status_message())
+            return
+
         if self.auto_fan_var.get():
             self._set_status("Modo auto termico activo. Desactivalo si quieres aplicar valores manuales.")
             return
@@ -600,7 +681,7 @@ class MainWindow:
             self._set_status(status_text)
 
     def _schedule_live_apply(self) -> None:
-        if self.auto_fan_var.get() or not self.live_apply_var.get():
+        if self._controls_blocked_by_permissions() or self.auto_fan_var.get() or not self.live_apply_var.get():
             return
 
         self._pending_live_apply_targets = (int(self.cpu_var.get()), int(self.gpu_var.get()))
@@ -616,7 +697,7 @@ class MainWindow:
 
     def _flush_live_apply(self) -> None:
         self._live_apply_job = None
-        if self.auto_fan_var.get() or not self.live_apply_var.get() or self._live_apply_inflight:
+        if self._controls_blocked_by_permissions() or self.auto_fan_var.get() or not self.live_apply_var.get() or self._live_apply_inflight:
             return
 
         targets = self._pending_live_apply_targets
@@ -778,7 +859,7 @@ class MainWindow:
             self.root.after_cancel(self._telemetry_job)
             self._telemetry_job = None
 
-        if self.restore_auto_on_exit_var.get():
+        if self.restore_auto_on_exit_var.get() and not self._controls_blocked_by_permissions():
             try:
                 result = self.controller.restore_automatic_control()
                 if result.ok:
@@ -787,6 +868,8 @@ class MainWindow:
                     self.logger.warning(result.message)
             except Exception as ex:  # noqa: BLE001
                 self.logger.exception("Error restoring automatic control on exit: %s", ex)
+        elif self.restore_auto_on_exit_var.get():
+            self.logger.info("Se omite restauracion automatica al salir: backend requiere Administrador.")
 
         self._save_config()
         self.logger.info("Application exit requested")

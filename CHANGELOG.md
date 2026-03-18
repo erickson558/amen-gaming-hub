@@ -1,5 +1,13 @@
 # Changelog
 
+## V0.0.20 - 2026-03-17
+
+- La app detecta cuando el backend activo requiere permisos de Administrador y el proceso no esta elevado.
+- En ese caso, la UI bloquea `Aplicar`, sliders, `Modo auto termico`, `Aplicar en vivo` y `Volver a auto al salir`, para evitar intentos a medias.
+- Si el usuario abre la app sin elevacion, cualquier `Modo auto termico` persistido se desactiva para no dejar el sistema en un estado ambiguo.
+- Se agrega una advertencia visible en la UI y mensajes de estado mas claros al cambiar backend o intentar usar funciones restringidas.
+- `Reparar NBFC` ahora se bloquea desde UI cuando no hay permisos de Administrador.
+
 ## V0.0.19 - 2026-03-17
 
 - Se agrega `Aplicar en vivo` para que los ventiladores se ajusten al mover los diales, sin usar el boton `Aplicar`.
