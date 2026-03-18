@@ -92,10 +92,9 @@ class OmenMonFanController(FanController):
         return self.executable_path.with_name("OmenMon.xml")
 
     def _run(self, args: list[str], timeout: int = 20) -> tuple[bool, str]:
-        cmdline = subprocess.list2cmdline([self.executable, *args])
         try:
             proc = subprocess.run(
-                ["cmd.exe", "/d", "/s", "/c", cmdline],
+                [self.executable, *args],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
