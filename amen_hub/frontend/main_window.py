@@ -47,6 +47,7 @@ class MainWindow:
         self._telemetry_inflight = False
         self._live_apply_inflight = False
         self._suspend_live_change = False
+        self._suspend_percent_entry_sync = False
         self._manual_cpu_percent = int(self.config_manager.config.cpu_fan_percent)
         self._manual_gpu_percent = int(self.config_manager.config.gpu_fan_percent)
         self._pending_live_apply_targets: tuple[int, int] | None = None
@@ -105,6 +106,8 @@ class MainWindow:
         cfg = self.config_manager.config
         self.cpu_var = tk.IntVar(value=cfg.cpu_fan_percent)
         self.gpu_var = tk.IntVar(value=cfg.gpu_fan_percent)
+        self.cpu_input_var = tk.StringVar(value=str(cfg.cpu_fan_percent))
+        self.gpu_input_var = tk.StringVar(value=str(cfg.gpu_fan_percent))
         self.auto_fan_var = tk.BooleanVar(value=cfg.fan_auto_mode)
         self.live_apply_var = tk.BooleanVar(value=cfg.live_apply_enabled)
         self.restore_auto_on_exit_var = tk.BooleanVar(value=cfg.restore_auto_on_exit)
@@ -158,6 +161,7 @@ class MainWindow:
 
         speed_card = ttk.LabelFrame(top_row, text="Ventiladores", style="Card.TLabelframe")
         speed_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        percent_validate_cmd = (self.root.register(self._validate_percent_entry), "%P")
 
         ttk.Label(speed_card, text="Dial FAN CPU").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
         self.cpu_scale = ttk.Scale(
@@ -170,8 +174,21 @@ class MainWindow:
             style="Accent.Horizontal.TScale",
         )
         self.cpu_scale.grid(row=1, column=0, sticky="ew", padx=12)
-        self.cpu_value_label = ttk.Label(speed_card, text=f"{self.cpu_var.get()}%", style="Value.TLabel")
-        self.cpu_value_label.grid(row=2, column=0, sticky="e", padx=12, pady=(4, 12))
+        cpu_manual_row = ttk.Frame(speed_card, style="Card.TFrame")
+        cpu_manual_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
+        ttk.Label(cpu_manual_row, text="CPU manual:").pack(side="left")
+        self.cpu_entry = ttk.Entry(
+            cpu_manual_row,
+            width=5,
+            justify="center",
+            textvariable=self.cpu_input_var,
+            validate="key",
+            validatecommand=percent_validate_cmd,
+        )
+        self.cpu_entry.pack(side="left", padx=(6, 4))
+        ttk.Label(cpu_manual_row, text="%").pack(side="left")
+        self.cpu_value_label = ttk.Label(cpu_manual_row, text=f"{self.cpu_var.get()}%", style="Value.TLabel")
+        self.cpu_value_label.pack(side="right")
 
         ttk.Label(speed_card, text="Dial FAN GPU").grid(row=3, column=0, sticky="w", padx=12, pady=(8, 4))
         self.gpu_scale = ttk.Scale(
@@ -184,8 +201,21 @@ class MainWindow:
             style="Accent.Horizontal.TScale",
         )
         self.gpu_scale.grid(row=4, column=0, sticky="ew", padx=12)
-        self.gpu_value_label = ttk.Label(speed_card, text=f"{self.gpu_var.get()}%", style="Value.TLabel")
-        self.gpu_value_label.grid(row=5, column=0, sticky="e", padx=12, pady=(4, 12))
+        gpu_manual_row = ttk.Frame(speed_card, style="Card.TFrame")
+        gpu_manual_row.grid(row=5, column=0, sticky="ew", padx=12, pady=(4, 12))
+        ttk.Label(gpu_manual_row, text="GPU manual:").pack(side="left")
+        self.gpu_entry = ttk.Entry(
+            gpu_manual_row,
+            width=5,
+            justify="center",
+            textvariable=self.gpu_input_var,
+            validate="key",
+            validatecommand=percent_validate_cmd,
+        )
+        self.gpu_entry.pack(side="left", padx=(6, 4))
+        ttk.Label(gpu_manual_row, text="%").pack(side="left")
+        self.gpu_value_label = ttk.Label(gpu_manual_row, text=f"{self.gpu_var.get()}%", style="Value.TLabel")
+        self.gpu_value_label.pack(side="right")
         speed_card.columnconfigure(0, weight=1)
 
         options = ttk.LabelFrame(container, text="Opciones", style="Card.TLabelframe")
@@ -402,9 +432,15 @@ class MainWindow:
 
         self.cpu_var.trace_add("write", lambda *_: self._on_live_change())
         self.gpu_var.trace_add("write", lambda *_: self._on_live_change())
+        self.cpu_input_var.trace_add("write", lambda *_: self._on_percent_entry_change("cpu"))
+        self.gpu_input_var.trace_add("write", lambda *_: self._on_percent_entry_change("gpu"))
         self.autoclose_seconds_var.trace_add("write", lambda *_: self._on_live_change())
         self.password_var.trace_add("write", lambda *_: self._on_live_change())
         self.nbfc_profile_var.trace_add("write", lambda *_: self._on_live_change())
+        self.cpu_entry.bind("<FocusOut>", lambda _e: self._normalize_percent_entry("cpu"))
+        self.gpu_entry.bind("<FocusOut>", lambda _e: self._normalize_percent_entry("gpu"))
+        self.cpu_entry.bind("<Return>", lambda _e: self._normalize_percent_entry("cpu"))
+        self.gpu_entry.bind("<Return>", lambda _e: self._normalize_percent_entry("gpu"))
 
     def _load_state(self) -> None:
         self._enforce_permission_constraints()
@@ -461,6 +497,49 @@ class MainWindow:
     def _update_value_labels(self) -> None:
         self.cpu_value_label.configure(text=f"{int(self.cpu_var.get())}%")
         self.gpu_value_label.configure(text=f"{int(self.gpu_var.get())}%")
+        self._sync_percent_entries_from_vars()
+
+    def _validate_percent_entry(self, proposed: str) -> bool:
+        if proposed == "":
+            return True
+        if not proposed.isdigit():
+            return False
+        return int(proposed) <= 100
+
+    def _on_percent_entry_change(self, target: str) -> None:
+        if self._suspend_percent_entry_sync:
+            return
+
+        entry_var = self.cpu_input_var if target == "cpu" else self.gpu_input_var
+        slider_var = self.cpu_var if target == "cpu" else self.gpu_var
+        text = entry_var.get().strip()
+        if text == "":
+            return
+
+        value = int(text)
+        if slider_var.get() != value:
+            slider_var.set(value)
+
+    def _normalize_percent_entry(self, target: str) -> str | None:
+        entry_var = self.cpu_input_var if target == "cpu" else self.gpu_input_var
+        slider_var = self.cpu_var if target == "cpu" else self.gpu_var
+        text = entry_var.get().strip()
+        normalized = str(slider_var.get()) if text == "" else str(min(max(int(text), 0), 100))
+        self._set_percent_entry_value(entry_var, normalized)
+        return "break"
+
+    def _set_percent_entry_value(self, entry_var: tk.StringVar, value: str) -> None:
+        if entry_var.get() == value:
+            return
+        self._suspend_percent_entry_sync = True
+        try:
+            entry_var.set(value)
+        finally:
+            self._suspend_percent_entry_sync = False
+
+    def _sync_percent_entries_from_vars(self) -> None:
+        self._set_percent_entry_value(self.cpu_input_var, str(int(self.cpu_var.get())))
+        self._set_percent_entry_value(self.gpu_input_var, str(int(self.gpu_var.get())))
 
     def _toggle_password(self) -> None:
         showing = not self.show_password_var.get()
@@ -526,6 +605,8 @@ class MainWindow:
             self.permission_hint_label.grid()
             self.cpu_scale.state(["disabled"])
             self.gpu_scale.state(["disabled"])
+            self.cpu_entry.configure(state="disabled")
+            self.gpu_entry.configure(state="disabled")
             self.apply_button.configure(state="disabled")
             self.auto_fan_check.state(["disabled"])
             self.live_apply_check.state(["disabled"])
@@ -542,12 +623,16 @@ class MainWindow:
         if auto_enabled:
             self.cpu_scale.state(["disabled"])
             self.gpu_scale.state(["disabled"])
+            self.cpu_entry.configure(state="disabled")
+            self.gpu_entry.configure(state="disabled")
             self.apply_button.configure(state="disabled")
             self.live_apply_check.state(["disabled"])
             return
 
         self.cpu_scale.state(["!disabled"])
         self.gpu_scale.state(["!disabled"])
+        self.cpu_entry.configure(state="normal")
+        self.gpu_entry.configure(state="normal")
         self.live_apply_check.state(["!disabled"])
         self.apply_button.configure(state="normal")
 

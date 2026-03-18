@@ -1,5 +1,11 @@
 # Changelog
 
+## V0.0.22 - 2026-03-17
+
+- Se agregan campos numericos directos `0-100` para CPU y GPU junto a cada dial de ventilador.
+- Los campos y los diales quedan sincronizados en ambos sentidos: mover el slider actualiza el valor escrito y escribir un porcentaje actualiza el dial.
+- Los campos manuales respetan las mismas restricciones que los diales y se deshabilitan cuando el modo auto o los permisos bloquean el control manual.
+
 ## V0.0.21 - 2026-03-17
 
 - Se corrige la lectura de temperatura CPU en equipos HP Victus/OMEN para priorizar sensores EC de `OmenMon` en lugar de depender solo de `BIOS Temp`.
