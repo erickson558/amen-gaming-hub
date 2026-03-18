@@ -1,5 +1,11 @@
 # Changelog
 
+## V0.0.21 - 2026-03-17
+
+- Se corrige la lectura de temperatura CPU en equipos HP Victus/OMEN para priorizar sensores EC de `OmenMon` en lugar de depender solo de `BIOS Temp`.
+- La telemetria ahora prioriza `CPUT` y hace fallback por otros sensores termicos EC antes de caer a lecturas genericas.
+- Se descartan lecturas invalidas de `0 °C` y el valor atascado `98 °C` de `TNT2`, que en algunos modelos Victus no representa una temperatura real.
+
 ## V0.0.20 - 2026-03-17
 
 - La app detecta cuando el backend activo requiere permisos de Administrador y el proceso no esta elevado.

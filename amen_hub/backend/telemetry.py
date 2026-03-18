@@ -15,6 +15,17 @@ class TemperatureReading:
 
 
 class TemperatureService:
+    OMENMON_CPU_SENSOR_PRIORITY = (
+        "CPUT",
+        "RTMP",
+        "TMP1",
+        "TNT5",
+        "TNT4",
+        "TNT3",
+        "TNT2",
+        "BIOS",
+    )
+
     def __init__(self, nbfc_executable: str | None = None, omenmon_executable: str | None = None) -> None:
         self.nbfc_executable = nbfc_executable
         self.omenmon_executable = omenmon_executable
@@ -83,22 +94,37 @@ class TemperatureService:
             return None
 
         executable = Path(self.omenmon_executable)
-        try:
-            proc = run_hidden(
-                [str(executable), "-Bios", "Temp"],
-                capture_output=True,
-                text=True,
-                timeout=6,
-                check=False,
-                cwd=str(executable.parent),
-            )
-        except OSError:
-            return None
+        for args in (
+            ["-Ec", "CPUT", "RTMP", "TMP1", "TNT2", "TNT3", "TNT4", "TNT5", "-Bios", "Temp"],
+            ["-Ec", "CPUT", "-Bios", "Temp"],
+            ["-Bios", "Temp"],
+        ):
+            try:
+                proc = run_hidden(
+                    [str(executable), *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=6,
+                    check=False,
+                    cwd=str(executable.parent),
+                )
+            except OSError:
+                return None
 
-        if proc.returncode != 0:
-            return None
+            output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+            if proc.returncode != 0 or not output:
+                continue
 
-        return self._extract_temperature(proc.stdout)
+            sensor_map = self._extract_omenmon_sensor_map(output)
+            omenmon_temp = self._select_omenmon_cpu_temp(sensor_map)
+            if omenmon_temp is not None:
+                return omenmon_temp
+
+            fallback = self._extract_temperature(output)
+            if fallback is not None:
+                return fallback
+
+        return None
 
     def _run_temp_command(self, cmd: list[str]) -> Optional[float]:
         try:
@@ -123,9 +149,49 @@ class TemperatureService:
                 celsius = (raw / 10.0) - 273.15
             else:
                 celsius = raw
-            if -20 < celsius < 130:
+            if 0 < celsius < 130:
                 candidates.append(round(celsius, 1))
 
         if not candidates:
             return None
         return candidates[-1]
+
+    def _extract_omenmon_sensor_map(self, text: str) -> dict[str, float]:
+        sensors: dict[str, float] = {}
+        for line in text.splitlines():
+            match = re.search(r"=\s*(-?\d+(?:\.\d+)?)\s*\[([^\]]+)\]\s*$", line.strip())
+            if not match:
+                continue
+
+            value = float(match.group(1))
+            label = match.group(2).strip().upper()
+            if label in {"°C", "C"}:
+                label = "BIOS"
+
+            normalized = self._normalize_omenmon_temp(label, value)
+            if normalized is None:
+                continue
+
+            sensors[label] = normalized
+        return sensors
+
+    def _select_omenmon_cpu_temp(self, sensors: dict[str, float]) -> Optional[float]:
+        for label in self.OMENMON_CPU_SENSOR_PRIORITY:
+            value = sensors.get(label)
+            if value is not None:
+                return value
+
+        fallback = [value for label, value in sensors.items() if label != "GPTM"]
+        if not fallback:
+            return None
+        return max(fallback)
+
+    def _normalize_omenmon_temp(self, label: str, value: float) -> Optional[float]:
+        if value <= 0 or value >= 130:
+            return None
+
+        # Some HP Victus models report TNT2 permanently stuck at 98 C.
+        if label == "TNT2" and value >= 98:
+            return None
+
+        return round(value, 1)

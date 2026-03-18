@@ -239,6 +239,7 @@ El build usa hooks de PyInstaller y empaqueta Tcl/Tk. Recompila con:
 - Usa backend `auto` u `omenmon` para evitar seguir forzando `nbfc` en Victus/OMEN.
 - Verifica que `tools/omenmon/OmenMon.exe` exista.
 - La app normaliza `OmenMon.xml` en local para Victus/OMEN con `BiosErrorReporting=false`, `FanLevelNeedManual=true` y `FanLevelUseEc=true`.
+- Para temperatura CPU, la app prioriza sensores EC de `OmenMon` como `CPUT` y solo usa `BIOS Temp` como ultimo fallback, porque en algunos Victus el sensor BIOS devuelve `0 °C`.
 - Si `Volver a auto al salir` esta activado, la app intenta restaurar el control automatico del sistema antes de cerrarse.
 
 ### La UI deja mover opciones pero nada aplica
