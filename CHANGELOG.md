@@ -1,5 +1,12 @@
 # Changelog
 
+## V0.0.18 - 2026-03-17
+
+- Se agrega `Modo auto termico` para ajustar ventiladores segun la temperatura CPU/GPU.
+- El modo auto usa una curva termica balanceada y evita re-aplicar cambios identicos en cada ciclo.
+- Mientras el modo auto esta activo, los controles manuales quedan bloqueados y la UI muestra el porcentaje objetivo calculado.
+- Los ultimos valores manuales se conservan para restaurarlos al desactivar el modo auto.
+
 ## V0.0.17 - 2026-03-17
 
 - Se ocultan de forma consistente las ventanas de consola de procesos auxiliares (`OmenMon`, `PowerShell`, `nvidia-smi`, `NBFC`) usando un wrapper comun para subprocesos Windows.

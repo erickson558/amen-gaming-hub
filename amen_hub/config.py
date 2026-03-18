@@ -12,6 +12,7 @@ from .paths import ensure_parent, resolve_in_base
 class AppConfig:
     cpu_fan_percent: int = 50
     gpu_fan_percent: int = 50
+    fan_auto_mode: bool = False
     autostart_process: bool = False
     autoclose_enabled: bool = False
     autoclose_seconds: int = 60
@@ -60,6 +61,7 @@ class ConfigManager:
         safe["gpu_fan_percent"] = int(min(max(int(safe["gpu_fan_percent"]), 0), 100))
         safe["autoclose_seconds"] = int(min(max(int(safe["autoclose_seconds"]), 5), 3600))
         safe["telemetry_interval_seconds"] = int(min(max(int(safe["telemetry_interval_seconds"]), 1), 30))
+        safe["fan_auto_mode"] = bool(safe["fan_auto_mode"])
         safe["autostart_process"] = bool(safe["autostart_process"])
         safe["autoclose_enabled"] = bool(safe["autoclose_enabled"])
         safe["window_geometry"] = str(safe["window_geometry"])

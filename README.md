@@ -7,6 +7,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 - Muestra temperatura CPU/GPU en una interfaz Tkinter con notacion `°C`.
 - Aplica velocidades de ventilador desde una GUI sin bloquear el hilo principal.
 - Refresca la telemetria al abrir y luego en vivo segun `telemetry_interval_seconds`.
+- Incluye `Modo auto termico` para enfriar CPU/GPU segun la temperatura del equipo.
 - Guarda configuracion persistente en `config.json`.
 - Permite usar distintos backends de control:
   - `omenmon`: control HP/OMEN basado en WMI/EC para equipos compatibles.
@@ -126,6 +127,13 @@ Ejecuta comandos custom definidos en `config.json` usando el placeholder `{value
 
 Backend de simulacion seguro para validar UI, threading y persistencia.
 
+### Modo Auto Termico
+
+- Ajusta ventiladores CPU/GPU automaticamente segun la telemetria en vivo.
+- Usa una curva balanceada para comportarse parecido al control termico normal del equipo.
+- Deshabilita sliders y aplicacion manual mientras esta activo.
+- Restaura los ultimos valores manuales cuando se desactiva.
+
 ### Alternativa HP Victus / OMEN
 
 En varios modelos Victus recientes, `NBFC` no es la via mas confiable. Si tu equipo ya tiene `OMEN Gaming Hub`, `HP Omen Driver` y `HP Application Driver`, la ruta HP/OMEN suele ser mejor.
@@ -144,6 +152,7 @@ Los valores persistentes viven en `config.json`. Campos relevantes:
 
 - `cpu_fan_percent`
 - `gpu_fan_percent`
+- `fan_auto_mode`
 - `fan_backend`
 - `fan_command_cpu`
 - `fan_command_gpu`

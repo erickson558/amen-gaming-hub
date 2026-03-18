@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk
@@ -18,6 +19,17 @@ from amen_hub.version import APP_VERSION_TAG
 
 
 class MainWindow:
+    AUTO_FAN_CURVE = (
+        (35.0, 20),
+        (45.0, 25),
+        (55.0, 35),
+        (65.0, 50),
+        (72.0, 65),
+        (78.0, 75),
+        (84.0, 85),
+        (90.0, 100),
+    )
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.logger = setup_logger()
@@ -32,6 +44,13 @@ class MainWindow:
         self._countdown_job: str | None = None
         self._telemetry_job: str | None = None
         self._telemetry_inflight = False
+        self._suspend_live_change = False
+        self._manual_cpu_percent = int(self.config_manager.config.cpu_fan_percent)
+        self._manual_gpu_percent = int(self.config_manager.config.gpu_fan_percent)
+        self._auto_mode_enabled = bool(self.config_manager.config.fan_auto_mode)
+        self._last_auto_targets: tuple[int, int] | None = None
+        self._last_auto_apply_at = 0.0
+        self._last_auto_status = ""
         self._base_status = "Listo"
 
         self.root.title(f"Amen Gaming Hub {APP_VERSION_TAG}")
@@ -86,6 +105,7 @@ class MainWindow:
         cfg = self.config_manager.config
         self.cpu_var = tk.IntVar(value=cfg.cpu_fan_percent)
         self.gpu_var = tk.IntVar(value=cfg.gpu_fan_percent)
+        self.auto_fan_var = tk.BooleanVar(value=cfg.fan_auto_mode)
         self.autostart_var = tk.BooleanVar(value=cfg.autostart_process)
         self.autoclose_enabled_var = tk.BooleanVar(value=cfg.autoclose_enabled)
         self.autoclose_seconds_var = tk.IntVar(value=cfg.autoclose_seconds)
@@ -175,6 +195,14 @@ class MainWindow:
             command=self._on_live_change,
         )
         self.autostart_check.grid(row=0, column=0, sticky="w", padx=10, pady=6)
+
+        self.auto_fan_check = ttk.Checkbutton(
+            options,
+            text="Modo auto termico",
+            variable=self.auto_fan_var,
+            command=self._on_auto_mode_changed,
+        )
+        self.auto_fan_check.grid(row=0, column=5, sticky="w", padx=(0, 10), pady=6)
 
         self.autoclose_check = ttk.Checkbutton(
             options,
@@ -283,7 +311,7 @@ class MainWindow:
         while not self.ui_queue.empty():
             msg = self.ui_queue.get_nowait()
             if msg == "__enable_apply__":
-                self.apply_button.configure(state="normal")
+                self._refresh_auto_mode_ui()
                 continue
             if msg == "__enable_repair__":
                 self.repair_button.configure(state="normal")
@@ -296,6 +324,9 @@ class MainWindow:
                 continue
             if msg == "__telemetry_done__":
                 self._telemetry_inflight = False
+                continue
+            if isinstance(msg, tuple) and msg[0] == "__auto__":
+                self._handle_auto_update(msg[1], msg[2], msg[3])
                 continue
             if isinstance(msg, tuple) and msg[0] == "__diagnose__":
                 self._show_diagnose_popup(msg[1])
@@ -341,9 +372,16 @@ class MainWindow:
 
     def _load_state(self) -> None:
         self._update_value_labels()
+        self._refresh_auto_mode_ui()
         self._save_config()
 
     def _on_live_change(self) -> None:
+        if self._suspend_live_change:
+            self._update_value_labels()
+            return
+        if not self.auto_fan_var.get():
+            self._manual_cpu_percent = int(self.cpu_var.get())
+            self._manual_gpu_percent = int(self.gpu_var.get())
         self._update_value_labels()
         self._save_config()
         self._ensure_countdown_state()
@@ -366,6 +404,36 @@ class MainWindow:
         self.controller = build_fan_controller(self.config_manager.config)
         self.telemetry = TemperatureService(self._nbfc_path, self._omenmon_path)
         self._set_status(f"Backend cambiado a: {self.controller.describe()}")
+        if self.auto_fan_var.get():
+            self._telemetry_async()
+
+    def _on_auto_mode_changed(self) -> None:
+        self._auto_mode_enabled = bool(self.auto_fan_var.get())
+        self._last_auto_targets = None
+        self._last_auto_apply_at = 0.0
+        self._last_auto_status = ""
+        self._refresh_auto_mode_ui()
+        if self._auto_mode_enabled:
+            self._set_status("Modo auto termico activo. La app ajustara ventiladores segun la temperatura.")
+            self._save_config()
+            self._telemetry_async()
+            return
+
+        self._set_display_fan_values(self._manual_cpu_percent, self._manual_gpu_percent)
+        self._save_config()
+        self._set_status("Modo auto termico desactivado. Controles manuales restaurados.")
+
+    def _refresh_auto_mode_ui(self) -> None:
+        auto_enabled = bool(self.auto_fan_var.get())
+        if auto_enabled:
+            self.cpu_scale.state(["disabled"])
+            self.gpu_scale.state(["disabled"])
+            self.apply_button.configure(state="disabled")
+            return
+
+        self.cpu_scale.state(["!disabled"])
+        self.gpu_scale.state(["!disabled"])
+        self.apply_button.configure(state="normal")
 
     def _save_config(self) -> None:
         try:
@@ -375,8 +443,9 @@ class MainWindow:
             self.autoclose_seconds_var.set(autoclose_secs)
 
         self.config_manager.update(
-            cpu_fan_percent=int(self.cpu_var.get()),
-            gpu_fan_percent=int(self.gpu_var.get()),
+            cpu_fan_percent=int(self._manual_cpu_percent),
+            gpu_fan_percent=int(self._manual_gpu_percent),
+            fan_auto_mode=bool(self.auto_fan_var.get()),
             autostart_process=bool(self.autostart_var.get()),
             autoclose_enabled=bool(self.autoclose_enabled_var.get()),
             autoclose_seconds=autoclose_secs,
@@ -387,6 +456,10 @@ class MainWindow:
         )
 
     def _apply_async(self) -> None:
+        if self.auto_fan_var.get():
+            self._set_status("Modo auto termico activo. Desactivalo si quieres aplicar valores manuales.")
+            return
+
         self.apply_button.configure(state="disabled")
         self._set_status("Aplicando velocidades de ventilador...")
 
@@ -434,6 +507,9 @@ class MainWindow:
         try:
             reading = self.telemetry.read()
             self.ui_queue.put(("__temps__", reading.cpu_c, reading.gpu_c))
+            auto_payload = self._evaluate_auto_mode(reading.cpu_c, reading.gpu_c)
+            if auto_payload is not None:
+                self.ui_queue.put(("__auto__", auto_payload[0], auto_payload[1], auto_payload[2]))
         finally:
             self.ui_queue.put("__telemetry_done__")
 
@@ -454,6 +530,97 @@ class MainWindow:
         color = "#46d483" if ratio < 0.65 else "#ffb347" if ratio < 0.82 else "#ff5f6d"
         canvas.itemconfigure("arc", extent=extent, outline=color)
         canvas.itemconfigure("value", text=value_text)
+
+    def _set_display_fan_values(self, cpu_percent: int, gpu_percent: int) -> None:
+        self._suspend_live_change = True
+        try:
+            self.cpu_var.set(int(min(max(cpu_percent, 0), 100)))
+            self.gpu_var.set(int(min(max(gpu_percent, 0), 100)))
+        finally:
+            self._suspend_live_change = False
+        self._update_value_labels()
+
+    def _handle_auto_update(self, cpu_percent: int | None, gpu_percent: int | None, status_text: str | None) -> None:
+        if not self.auto_fan_var.get():
+            return
+        if cpu_percent is not None and gpu_percent is not None:
+            self._set_display_fan_values(cpu_percent, gpu_percent)
+        if status_text:
+            self._set_status(status_text)
+
+    def _evaluate_auto_mode(self, cpu_c: float | None, gpu_c: float | None) -> tuple[int | None, int | None, str | None] | None:
+        if not self._auto_mode_enabled:
+            return None
+
+        targets = self._calculate_auto_targets(cpu_c, gpu_c)
+        if targets is None:
+            status = "Modo auto termico activo. Esperando telemetria de temperatura."
+            return None, None, self._dedupe_auto_status(status)
+
+        cpu_target, gpu_target = targets
+        status = (
+            "Modo auto termico: "
+            f"CPU {self._format_temp(cpu_c)} -> {cpu_target}% | "
+            f"GPU {self._format_temp(gpu_c)} -> {gpu_target}%"
+        )
+
+        if not is_running_as_admin():
+            return cpu_target, gpu_target, self._dedupe_auto_status(status + " | requiere Administrador para aplicar")
+
+        desired = (cpu_target, gpu_target)
+        cooldown_s = max(3.0, float(self.config_manager.config.telemetry_interval_seconds))
+        should_apply = self._last_auto_targets != desired and (
+            self._last_auto_targets is None or (time.monotonic() - self._last_auto_apply_at) >= cooldown_s
+        )
+
+        if should_apply:
+            result = self.controller.apply_fan_speeds(cpu_target, gpu_target)
+            if result.ok:
+                self._last_auto_targets = desired
+                self._last_auto_apply_at = time.monotonic()
+                return cpu_target, gpu_target, self._dedupe_auto_status(status + " | aplicado")
+            return cpu_target, gpu_target, self._dedupe_auto_status(f"Modo auto no pudo aplicar: {result.message}")
+
+        if self._last_auto_targets is None:
+            return cpu_target, gpu_target, self._dedupe_auto_status(status + " | calculado")
+        return cpu_target, gpu_target, self._dedupe_auto_status(status + " | manteniendo curva")
+
+    def _calculate_auto_targets(self, cpu_c: float | None, gpu_c: float | None) -> tuple[int, int] | None:
+        available = [temp for temp in (cpu_c, gpu_c) if temp is not None]
+        if not available:
+            return None
+
+        fallback_temp = max(available)
+        cpu_target = self._curve_to_percent(cpu_c if cpu_c is not None else fallback_temp)
+        gpu_target = self._curve_to_percent(gpu_c if gpu_c is not None else fallback_temp)
+        return cpu_target, gpu_target
+
+    def _curve_to_percent(self, temp_c: float) -> int:
+        curve = self.AUTO_FAN_CURVE
+        if temp_c <= curve[0][0]:
+            return curve[0][1]
+
+        for index in range(1, len(curve)):
+            low_temp, low_percent = curve[index - 1]
+            high_temp, high_percent = curve[index]
+            if temp_c <= high_temp:
+                span = high_temp - low_temp
+                ratio = 0.0 if span <= 0 else (temp_c - low_temp) / span
+                interpolated = low_percent + ((high_percent - low_percent) * ratio)
+                return int(min(100, max(20, round(interpolated / 5.0) * 5)))
+
+        return 100
+
+    def _format_temp(self, temp_c: float | None) -> str:
+        if temp_c is None:
+            return "N/D"
+        return f"{temp_c:.1f} °C"
+
+    def _dedupe_auto_status(self, status: str) -> str | None:
+        if status == self._last_auto_status:
+            return None
+        self._last_auto_status = status
+        return status
 
     def _set_status(self, message: str) -> None:
         self._base_status = message
