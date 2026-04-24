@@ -10,6 +10,8 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 - Permite editar manualmente el porcentaje CPU/GPU con `Spinbox` numericos `0-100` sincronizados con los diales.
 - Refresca la telemetria al abrir y luego en vivo segun `telemetry_interval_seconds`.
 - Incluye `Modo auto termico` para enfriar CPU/GPU segun la temperatura del equipo.
+- Incluye selector de idioma (`Español` / `English`) con persistencia local.
+- Incluye boton de donacion `Comprame una cerveza` (PayPal) desde la barra de acciones y menu.
 - Guarda configuracion persistente en `config.json`.
 - Permite usar distintos backends de control:
   - `omenmon`: control HP/OMEN basado en WMI/EC para equipos compatibles.
@@ -21,6 +23,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 
 ## Estado del proyecto
 
+- Version actual: `V0.0.24`.
 - Plataforma objetivo: Windows 10/11.
 - Lenguaje: Python 3.12 recomendado.
 - Licencia: Apache License 2.0.

@@ -1,5 +1,12 @@
 # Changelog
 
+## V0.0.24 - 2026-04-24
+
+- Se agrega soporte multi idioma (es/en) en la UI con selector en menu `Idioma/Language` y persistencia en `config.json`.
+- Se agrega boton de donaciones `Comprame una cerveza` y opcion de donacion en el menu de ayuda, ambos enlazados a PayPal.
+- Se corrige un problema visual donde botones secundarios usaban un estilo de `Scale` en lugar de estilo de `Button`.
+- Se mejora robustez de UI evitando errores por conversion numerica en `Spinbox` y `autocierre` con valores temporales invalidos.
+
 ## V0.0.23 - 2026-03-17
 
 - Los campos manuales CPU/GPU pasan de texto libre a `Spinbox`, con flechas arriba/abajo para ajustar porcentaje sin teclear.

@@ -28,6 +28,7 @@ class AppConfig:
     nbfc_profile: str = "HP OMEN Notebook PC 15"
     nbfc_executable: str = "auto"
     nbfc_autodiscover_profile: bool = True
+    language: str = "es"
 
 
 class ConfigManager:
@@ -79,6 +80,9 @@ class ConfigManager:
         safe["nbfc_profile"] = str(safe["nbfc_profile"])
         safe["nbfc_executable"] = str(safe["nbfc_executable"])
         safe["nbfc_autodiscover_profile"] = bool(safe["nbfc_autodiscover_profile"])
+        safe["language"] = str(safe.get("language", "es")).strip().lower()
+        if safe["language"] not in {"es", "en"}:
+            safe["language"] = "es"
 
         profile_aliases = {
             "notebook pc 15": "HP OMEN Notebook PC 15",

@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from tkinter import ttk
 from typing import Any
@@ -14,6 +15,8 @@ from amen_hub.backend.fan_controller import find_omenmon_executable
 from amen_hub.backend.fan_controller import find_nbfc_executable
 from amen_hub.backend.telemetry import TemperatureService
 from amen_hub.config import ConfigManager
+from amen_hub.i18n import SUPPORTED_LANGUAGES
+from amen_hub.i18n import Translator
 from amen_hub.logger import setup_logger
 from amen_hub.version import APP_VERSION_TAG
 
@@ -39,6 +42,7 @@ class MainWindow:
         self.controller = build_fan_controller(self.config_manager.config)
         self.telemetry = TemperatureService(self._nbfc_path, self._omenmon_path)
         self.ui_queue: queue.Queue[Any] = queue.Queue()
+        self.tr = Translator(self.config_manager.config.language)
 
         self._countdown_remaining = 0
         self._countdown_job: str | None = None
@@ -56,7 +60,11 @@ class MainWindow:
         self._last_auto_targets: tuple[int, int] | None = None
         self._last_auto_apply_at = 0.0
         self._last_auto_status = ""
-        self._base_status = "Listo"
+        self._base_status = self.tr.t("st_ready")
+        self._menu = None
+        self._menu_file = None
+        self._menu_help = None
+        self._menu_language = None
 
         self.root.title(f"Amen Gaming Hub {APP_VERSION_TAG}")
         self.root.geometry(self.config_manager.config.window_geometry)
@@ -99,6 +107,8 @@ class MainWindow:
         style.configure("Accent.Horizontal.TScale", background="#121a22", troughcolor="#293644")
         style.configure("Action.TButton", background="#00a564", foreground="white", padding=(12, 7), borderwidth=0)
         style.map("Action.TButton", background=[("active", "#00be73"), ("disabled", "#3d5b50")])
+        style.configure("Secondary.TButton", background="#1f2a36", foreground="#d9e8ff", padding=(12, 7), borderwidth=0)
+        style.map("Secondary.TButton", background=[("active", "#2b3a49"), ("disabled", "#3d4a56")])
         style.configure("Danger.TButton", background="#b02f3c", foreground="white", padding=(12, 7), borderwidth=0)
         style.map("Danger.TButton", background=[("active", "#ca3a49")])
 
@@ -115,57 +125,71 @@ class MainWindow:
         self.autoclose_enabled_var = tk.BooleanVar(value=cfg.autoclose_enabled)
         self.autoclose_seconds_var = tk.IntVar(value=cfg.autoclose_seconds)
         self.password_var = tk.StringVar(value=cfg.app_password)
+        self.language_var = tk.StringVar(value=cfg.language)
         self.backend_var = tk.StringVar(value=cfg.fan_backend)
         self.nbfc_profile_var = tk.StringVar(value=cfg.nbfc_profile)
         self.show_password_var = tk.BooleanVar(value=False)
         self.permission_hint_var = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="Listo")
+        self.status_var = tk.StringVar(value=self.tr.t("st_ready"))
         self.cpu_temp_var = tk.StringVar(value="--.- °C")
         self.gpu_temp_var = tk.StringVar(value="--.- °C")
 
     def _build_menu(self) -> None:
-        menu = tk.Menu(self.root)
+        # Keep explicit references so labels can be refreshed when language changes.
+        self._menu = tk.Menu(self.root)
 
-        file_menu = tk.Menu(menu, tearoff=False)
-        file_menu.add_command(label="Aplicar", accelerator="Ctrl+Enter", command=self._apply_async)
-        file_menu.add_separator()
-        file_menu.add_command(label="Salir", accelerator="Alt+F4", command=self._on_exit)
+        self._menu_file = tk.Menu(self._menu, tearoff=False)
+        self._menu_file.add_command(label=self.tr.t("menu_apply"), accelerator="Ctrl+Enter", command=self._apply_async)
+        self._menu_file.add_separator()
+        self._menu_file.add_command(label=self.tr.t("menu_exit"), accelerator="Alt+F4", command=self._on_exit)
 
-        help_menu = tk.Menu(menu, tearoff=False)
-        help_menu.add_command(label="About", accelerator="F1", command=self._show_about)
+        self._menu_help = tk.Menu(self._menu, tearoff=False)
+        self._menu_help.add_command(label=self.tr.t("menu_about"), accelerator="F1", command=self._show_about)
+        self._menu_help.add_command(label=self.tr.t("menu_donate"), command=self._open_donate_link)
 
-        menu.add_cascade(label="Archivo", menu=file_menu, underline=0)
-        menu.add_cascade(label="Ayuda", menu=help_menu, underline=0)
-        self.root.config(menu=menu)
+        self._menu_language = tk.Menu(self._menu, tearoff=False)
+        for lang_code, lang_name in SUPPORTED_LANGUAGES.items():
+            self._menu_language.add_radiobutton(
+                label=lang_name,
+                value=lang_code,
+                variable=self.language_var,
+                command=lambda code=lang_code: self._set_language(code),
+            )
+
+        self._menu.add_cascade(label=self.tr.t("menu_file"), menu=self._menu_file, underline=0)
+        self._menu.add_cascade(label=self.tr.t("menu_help"), menu=self._menu_help, underline=0)
+        self._menu.add_cascade(label=self.tr.t("menu_language"), menu=self._menu_language, underline=0)
+        self.root.config(menu=self._menu)
 
     def _build_ui(self) -> None:
         container = ttk.Frame(self.root, padding=16, style="Root.TFrame")
         container.pack(fill="both", expand=True)
 
-        title = ttk.Label(container, text=f"Amen Gaming Hub {APP_VERSION_TAG}", style="Title.TLabel")
-        title.pack(anchor="w", pady=(0, 2))
-        subtitle = ttk.Label(container, text="Control Termico y Potencia", style="SubTitle.TLabel")
-        subtitle.pack(anchor="w", pady=(0, 12))
+        self.title_label = ttk.Label(container, text=f"Amen Gaming Hub {APP_VERSION_TAG}", style="Title.TLabel")
+        self.title_label.pack(anchor="w", pady=(0, 2))
+        self.subtitle_label = ttk.Label(container, text=self.tr.t("subtitle"), style="SubTitle.TLabel")
+        self.subtitle_label.pack(anchor="w", pady=(0, 12))
 
         top_row = ttk.Frame(container, style="Root.TFrame")
         top_row.pack(fill="x", pady=(0, 10))
 
-        temp_card = ttk.LabelFrame(top_row, text="Temperaturas (°C)", style="Card.TLabelframe")
-        temp_card.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.temp_card = ttk.LabelFrame(top_row, text=self.tr.t("card_temps"), style="Card.TLabelframe")
+        self.temp_card.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
-        self.cpu_temp_canvas, self.cpu_temp_label = self._build_temp_meter(temp_card, "CPU", self.cpu_temp_var)
+        self.cpu_temp_canvas, self.cpu_temp_label = self._build_temp_meter(self.temp_card, "CPU", self.cpu_temp_var)
         self.cpu_temp_canvas.grid(row=0, column=0, padx=24, pady=16)
 
-        self.gpu_temp_canvas, self.gpu_temp_label = self._build_temp_meter(temp_card, "GPU", self.gpu_temp_var)
+        self.gpu_temp_canvas, self.gpu_temp_label = self._build_temp_meter(self.temp_card, "GPU", self.gpu_temp_var)
         self.gpu_temp_canvas.grid(row=0, column=1, padx=24, pady=16)
 
-        speed_card = ttk.LabelFrame(top_row, text="Ventiladores", style="Card.TLabelframe")
-        speed_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        self.speed_card = ttk.LabelFrame(top_row, text=self.tr.t("card_fans"), style="Card.TLabelframe")
+        self.speed_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
         percent_validate_cmd = (self.root.register(self._validate_percent_entry), "%P")
 
-        ttk.Label(speed_card, text="Dial FAN CPU").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
+        self.fan_cpu_dial_label = ttk.Label(self.speed_card, text=self.tr.t("fan_cpu_dial"))
+        self.fan_cpu_dial_label.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
         self.cpu_scale = ttk.Scale(
-            speed_card,
+            self.speed_card,
             from_=0,
             to=100,
             orient="horizontal",
@@ -174,9 +198,10 @@ class MainWindow:
             style="Accent.Horizontal.TScale",
         )
         self.cpu_scale.grid(row=1, column=0, sticky="ew", padx=12)
-        cpu_manual_row = ttk.Frame(speed_card, style="Card.TFrame")
+        cpu_manual_row = ttk.Frame(self.speed_card, style="Card.TFrame")
         cpu_manual_row.grid(row=2, column=0, sticky="ew", padx=12, pady=(4, 12))
-        ttk.Label(cpu_manual_row, text="CPU manual:").pack(side="left")
+        self.cpu_manual_label = ttk.Label(cpu_manual_row, text=self.tr.t("fan_cpu_manual"))
+        self.cpu_manual_label.pack(side="left")
         self.cpu_entry = ttk.Spinbox(
             cpu_manual_row,
             from_=0,
@@ -194,9 +219,10 @@ class MainWindow:
         self.cpu_value_label = ttk.Label(cpu_manual_row, text=f"{self.cpu_var.get()}%", style="Value.TLabel")
         self.cpu_value_label.pack(side="right")
 
-        ttk.Label(speed_card, text="Dial FAN GPU").grid(row=3, column=0, sticky="w", padx=12, pady=(8, 4))
+        self.fan_gpu_dial_label = ttk.Label(self.speed_card, text=self.tr.t("fan_gpu_dial"))
+        self.fan_gpu_dial_label.grid(row=3, column=0, sticky="w", padx=12, pady=(8, 4))
         self.gpu_scale = ttk.Scale(
-            speed_card,
+            self.speed_card,
             from_=0,
             to=100,
             orient="horizontal",
@@ -205,9 +231,10 @@ class MainWindow:
             style="Accent.Horizontal.TScale",
         )
         self.gpu_scale.grid(row=4, column=0, sticky="ew", padx=12)
-        gpu_manual_row = ttk.Frame(speed_card, style="Card.TFrame")
+        gpu_manual_row = ttk.Frame(self.speed_card, style="Card.TFrame")
         gpu_manual_row.grid(row=5, column=0, sticky="ew", padx=12, pady=(4, 12))
-        ttk.Label(gpu_manual_row, text="GPU manual:").pack(side="left")
+        self.gpu_manual_label = ttk.Label(gpu_manual_row, text=self.tr.t("fan_gpu_manual"))
+        self.gpu_manual_label.pack(side="left")
         self.gpu_entry = ttk.Spinbox(
             gpu_manual_row,
             from_=0,
@@ -224,54 +251,55 @@ class MainWindow:
         ttk.Label(gpu_manual_row, text="%").pack(side="left")
         self.gpu_value_label = ttk.Label(gpu_manual_row, text=f"{self.gpu_var.get()}%", style="Value.TLabel")
         self.gpu_value_label.pack(side="right")
-        speed_card.columnconfigure(0, weight=1)
+        self.speed_card.columnconfigure(0, weight=1)
 
-        options = ttk.LabelFrame(container, text="Opciones", style="Card.TLabelframe")
-        options.pack(fill="x", pady=(0, 10))
+        self.options_card = ttk.LabelFrame(container, text=self.tr.t("card_options"), style="Card.TLabelframe")
+        self.options_card.pack(fill="x", pady=(0, 10))
 
         self.autostart_check = ttk.Checkbutton(
-            options,
-            text="Autoiniciar proceso al abrir",
+            self.options_card,
+            text=self.tr.t("opt_autostart"),
             variable=self.autostart_var,
             command=self._on_live_change,
         )
         self.autostart_check.grid(row=0, column=0, sticky="w", padx=10, pady=6)
 
         self.auto_fan_check = ttk.Checkbutton(
-            options,
-            text="Modo auto termico",
+            self.options_card,
+            text=self.tr.t("opt_auto_thermal"),
             variable=self.auto_fan_var,
             command=self._on_auto_mode_changed,
         )
         self.auto_fan_check.grid(row=0, column=5, sticky="w", padx=(0, 10), pady=6)
 
         self.live_apply_check = ttk.Checkbutton(
-            options,
-            text="Aplicar en vivo",
+            self.options_card,
+            text=self.tr.t("opt_live_apply"),
             variable=self.live_apply_var,
             command=self._on_live_apply_option_changed,
         )
         self.live_apply_check.grid(row=1, column=5, sticky="w", padx=(0, 10), pady=6)
 
         self.restore_auto_check = ttk.Checkbutton(
-            options,
-            text="Volver a auto al salir",
+            self.options_card,
+            text=self.tr.t("opt_restore_auto"),
             variable=self.restore_auto_on_exit_var,
             command=self._on_live_change,
         )
         self.restore_auto_check.grid(row=2, column=5, sticky="w", padx=(0, 10), pady=(6, 10))
 
         self.autoclose_check = ttk.Checkbutton(
-            options,
-            text="Autocerrar",
+            self.options_card,
+            text=self.tr.t("opt_autoclose"),
             variable=self.autoclose_enabled_var,
             command=self._on_live_change,
         )
         self.autoclose_check.grid(row=1, column=0, sticky="w", padx=10, pady=6)
 
-        ttk.Label(options, text="Segundos autocierre:").grid(row=1, column=1, sticky="e", padx=(10, 4))
+        self.autoclose_seconds_label = ttk.Label(self.options_card, text=self.tr.t("opt_autoclose_secs"))
+        self.autoclose_seconds_label.grid(row=1, column=1, sticky="e", padx=(10, 4))
         self.autoclose_spin = ttk.Spinbox(
-            options,
+            self.options_card,
             from_=5,
             to=3600,
             textvariable=self.autoclose_seconds_var,
@@ -280,9 +308,10 @@ class MainWindow:
         )
         self.autoclose_spin.grid(row=1, column=2, sticky="w", padx=(0, 14))
 
-        ttk.Label(options, text="Backend ventiladores:").grid(row=0, column=1, sticky="e", padx=(10, 4))
+        self.backend_label = ttk.Label(self.options_card, text=self.tr.t("opt_backend"))
+        self.backend_label.grid(row=0, column=1, sticky="e", padx=(10, 4))
         self.backend_combo = ttk.Combobox(
-            options,
+            self.options_card,
             textvariable=self.backend_var,
             values=["auto", "omenmon", "nbfc", "command", "mock"],
             state="readonly",
@@ -291,18 +320,20 @@ class MainWindow:
         self.backend_combo.grid(row=0, column=2, sticky="w", padx=(0, 14), pady=6)
         self.backend_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_backend_changed())
 
-        ttk.Label(options, text="Perfil NBFC:").grid(row=0, column=3, sticky="e", padx=(10, 4))
-        self.nbfc_profile_entry = ttk.Entry(options, textvariable=self.nbfc_profile_var, width=26)
+        self.nbfc_profile_label = ttk.Label(self.options_card, text=self.tr.t("opt_nbfc_profile"))
+        self.nbfc_profile_label.grid(row=0, column=3, sticky="e", padx=(10, 4))
+        self.nbfc_profile_entry = ttk.Entry(self.options_card, textvariable=self.nbfc_profile_var, width=26)
         self.nbfc_profile_entry.grid(row=0, column=4, sticky="w", padx=(0, 14), pady=6)
 
-        ttk.Label(options, text="Password (opcional):").grid(row=2, column=0, sticky="w", padx=10, pady=(6, 10))
-        self.password_entry = ttk.Entry(options, textvariable=self.password_var, show="*")
+        self.password_label = ttk.Label(self.options_card, text=self.tr.t("opt_password"))
+        self.password_label.grid(row=2, column=0, sticky="w", padx=10, pady=(6, 10))
+        self.password_entry = ttk.Entry(self.options_card, textvariable=self.password_var, show="*")
         self.password_entry.grid(row=2, column=1, sticky="ew", padx=(10, 4), pady=(6, 10))
-        self.toggle_pass_button = ttk.Button(options, text="Mostrar", command=self._toggle_password)
+        self.toggle_pass_button = ttk.Button(self.options_card, text=self.tr.t("btn_show"), command=self._toggle_password)
         self.toggle_pass_button.grid(row=2, column=2, sticky="w", padx=(0, 10), pady=(6, 10))
 
         self.permission_hint_label = ttk.Label(
-            options,
+            self.options_card,
             textvariable=self.permission_hint_var,
             style="Warning.TLabel",
             wraplength=860,
@@ -311,22 +342,25 @@ class MainWindow:
         self.permission_hint_label.grid(row=3, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 10))
         self.permission_hint_label.grid_remove()
 
-        options.columnconfigure(1, weight=1)
-        options.columnconfigure(4, weight=1)
+        self.options_card.columnconfigure(1, weight=1)
+        self.options_card.columnconfigure(4, weight=1)
 
         actions = ttk.Frame(container, style="Root.TFrame")
         actions.pack(fill="x", pady=(0, 8))
 
-        self.apply_button = ttk.Button(actions, text="Aplicar", command=self._apply_async, style="Action.TButton")
+        self.apply_button = ttk.Button(actions, text=self.tr.t("btn_apply"), command=self._apply_async, style="Action.TButton")
         self.apply_button.pack(side="left")
 
-        self.repair_button = ttk.Button(actions, text="Reparar NBFC", command=self._repair_nbfc, style="Accent.Horizontal.TScale")
+        self.repair_button = ttk.Button(actions, text=self.tr.t("btn_repair_nbfc"), command=self._repair_nbfc, style="Secondary.TButton")
         self.repair_button.pack(side="left", padx=(8, 0))
 
-        self.diagnose_button = ttk.Button(actions, text="Diagnóstico NBFC", command=self._diagnose_nbfc, style="Accent.Horizontal.TScale")
+        self.diagnose_button = ttk.Button(actions, text=self.tr.t("btn_diagnose_nbfc"), command=self._diagnose_nbfc, style="Secondary.TButton")
         self.diagnose_button.pack(side="left", padx=(8, 0))
 
-        self.exit_button = ttk.Button(actions, text="Salir", command=self._on_exit, style="Danger.TButton")
+        self.donate_button = ttk.Button(actions, text=self.tr.t("btn_donate"), command=self._open_donate_link, style="Secondary.TButton")
+        self.donate_button.pack(side="left", padx=(8, 0))
+
+        self.exit_button = ttk.Button(actions, text=self.tr.t("btn_exit"), command=self._on_exit, style="Danger.TButton")
         self.exit_button.pack(side="left", padx=(8, 0))
 
         # Barra de estado
@@ -335,7 +369,7 @@ class MainWindow:
 
     def _diagnose_nbfc(self) -> None:
         self.diagnose_button.configure(state="disabled")
-        self._set_status("Ejecutando diagnóstico NBFC...")
+        self._set_status(self.tr.t("st_diagnosing"))
 
         def worker():
             try:
@@ -343,7 +377,7 @@ class MainWindow:
                 if isinstance(self.controller, NBFCFanController):
                     report = self.controller.diagnosticar_nbfc()
                 else:
-                    report = "El backend activo no es NBFC. Cambia a NBFC para diagnóstico."
+                    report = self.tr.t("st_no_nbfc_diag")
                 self.ui_queue.put(("__diagnose__", report))
             except Exception as ex:
                 self.ui_queue.put(("__diagnose__", f"Error en diagnóstico: {ex}"))
@@ -355,11 +389,11 @@ class MainWindow:
 
     def _repair_nbfc(self) -> None:
         if not is_running_as_admin():
-            self._set_status("Reparar NBFC requiere ejecutar la app como Administrador.")
+            self._set_status(self.tr.t("st_repair_no_admin"))
             return
 
         self.repair_button.configure(state="disabled")
-        self._set_status("Intentando reparar NBFC...")
+        self._set_status(self.tr.t("st_repairing"))
 
         def worker():
             try:
@@ -369,7 +403,7 @@ class MainWindow:
                     msg = report
                 else:
                     repaired = False
-                    msg = "El backend activo no es NBFC. Cambia a NBFC para reparar."
+                    msg = self.tr.t("st_no_nbfc_repair")
                 self.ui_queue.put(msg)
             except Exception as ex:
                 self.ui_queue.put(f"Error al reparar NBFC: {ex}")
@@ -404,21 +438,21 @@ class MainWindow:
                 continue
             if isinstance(msg, tuple) and msg[0] == "__diagnose__":
                 self._show_diagnose_popup(msg[1])
-                self._set_status("Diagnóstico NBFC completado. Haz clic en el botón para ver detalles.")
+                self._set_status(self.tr.t("st_diagnosis_done"))
                 continue
             self._set_status(str(msg))
         self.root.after(120, self._drain_queue)
 
     def _show_diagnose_popup(self, report: str) -> None:
         popup = tk.Toplevel(self.root)
-        popup.title("Diagnóstico NBFC")
+        popup.title(self.tr.t("diag_title"))
         popup.geometry("700x500")
         popup.configure(bg="#181f24")
         txt = tk.Text(popup, wrap="word", bg="#181f24", fg="#e6f7ff", font=("Consolas", 10))
         txt.insert("1.0", report)
         txt.config(state="disabled")
         txt.pack(fill="both", expand=True, padx=10, pady=10)
-        btn = ttk.Button(popup, text="Cerrar", command=popup.destroy)
+        btn = ttk.Button(popup, text=self.tr.t("btn_close"), command=popup.destroy)
         btn.pack(pady=8)
 
 
@@ -451,23 +485,82 @@ class MainWindow:
         self.gpu_entry.bind("<Return>", lambda _e: self._normalize_percent_entry("gpu"))
 
     def _load_state(self) -> None:
+        self._apply_translations()
         self._enforce_permission_constraints()
         self._update_value_labels()
         self._refresh_auto_mode_ui()
         self._save_config()
 
+    def _apply_translations(self) -> None:
+        # Refresh all user-facing labels from the active translator.
+        self.subtitle_label.configure(text=self.tr.t("subtitle"))
+        self.temp_card.configure(text=self.tr.t("card_temps"))
+        self.speed_card.configure(text=self.tr.t("card_fans"))
+        self.options_card.configure(text=self.tr.t("card_options"))
+        self.fan_cpu_dial_label.configure(text=self.tr.t("fan_cpu_dial"))
+        self.cpu_manual_label.configure(text=self.tr.t("fan_cpu_manual"))
+        self.fan_gpu_dial_label.configure(text=self.tr.t("fan_gpu_dial"))
+        self.gpu_manual_label.configure(text=self.tr.t("fan_gpu_manual"))
+        self.autostart_check.configure(text=self.tr.t("opt_autostart"))
+        self.auto_fan_check.configure(text=self.tr.t("opt_auto_thermal"))
+        self.live_apply_check.configure(text=self.tr.t("opt_live_apply"))
+        self.restore_auto_check.configure(text=self.tr.t("opt_restore_auto"))
+        self.autoclose_check.configure(text=self.tr.t("opt_autoclose"))
+        self.autoclose_seconds_label.configure(text=self.tr.t("opt_autoclose_secs"))
+        self.backend_label.configure(text=self.tr.t("opt_backend"))
+        self.nbfc_profile_label.configure(text=self.tr.t("opt_nbfc_profile"))
+        self.password_label.configure(text=self.tr.t("opt_password"))
+        self.toggle_pass_button.configure(text=self.tr.t("btn_hide") if self.show_password_var.get() else self.tr.t("btn_show"))
+        self.apply_button.configure(text=self.tr.t("btn_apply"))
+        self.repair_button.configure(text=self.tr.t("btn_repair_nbfc"))
+        self.diagnose_button.configure(text=self.tr.t("btn_diagnose_nbfc"))
+        self.donate_button.configure(text=self.tr.t("btn_donate"))
+        self.exit_button.configure(text=self.tr.t("btn_exit"))
+
+        if self._menu is not None and self._menu_file is not None and self._menu_help is not None:
+            self._menu_file.entryconfigure(0, label=self.tr.t("menu_apply"))
+            self._menu_file.entryconfigure(2, label=self.tr.t("menu_exit"))
+            self._menu_help.entryconfigure(0, label=self.tr.t("menu_about"))
+            self._menu_help.entryconfigure(1, label=self.tr.t("menu_donate"))
+            self._menu.entryconfigure(0, label=self.tr.t("menu_file"))
+            self._menu.entryconfigure(1, label=self.tr.t("menu_help"))
+            self._menu.entryconfigure(2, label=self.tr.t("menu_language"))
+
+    def _set_language(self, lang_code: str) -> None:
+        self.tr.language = lang_code
+        self.language_var.set(self.tr.language)
+        self._apply_translations()
+        self._refresh_auto_mode_ui()
+        self._set_status(self._backend_status_message())
+        self._save_config()
+
+    def _open_donate_link(self) -> None:
+        # Open PayPal safely in the default browser without blocking the GUI.
+        try:
+            webbrowser.open_new_tab("https://www.paypal.com/donate/?hosted_button_id=ZABFRXC2P3JQN")
+        except Exception as ex:  # noqa: BLE001
+            self._set_status(self.tr.t("st_browser_error", error=str(ex)))
+
+    def _safe_autoclose_seconds(self) -> int:
+        try:
+            return max(5, int(self.autoclose_seconds_var.get()))
+        except (tk.TclError, TypeError, ValueError):
+            self.autoclose_seconds_var.set(60)
+            return 60
+
     def _controls_blocked_by_permissions(self) -> bool:
         return self.controller.requires_admin_for_control() and not is_running_as_admin()
 
     def _permission_status_message(self) -> str:
-        return f"Control bloqueado: el backend {self.controller.describe()} requiere abrir la app como Administrador."
+        return self.tr.t("st_perm_blocked", backend=self.controller.describe())
 
-    def _backend_status_message(self, prefix: str = "Backend activo") -> str:
-        message = f"{prefix}: {self.controller.describe()}"
+    def _backend_status_message(self, prefix: str | None = None) -> str:
+        prefix_value = prefix or self.tr.t("prefix_active")
+        message = self.tr.t("st_backend_base", prefix=prefix_value, backend=self.controller.describe())
         if self._controls_blocked_by_permissions():
-            return f"{message} | Control bloqueado: abre la app como Administrador"
+            return self.tr.t("st_backend_admin_block", message=message)
         if not is_running_as_admin():
-            return f"{message} | Sin Administrador: algunas lecturas pueden ser limitadas"
+            return self.tr.t("st_backend_no_admin", message=message)
         return message
 
     def _enforce_permission_constraints(self) -> None:
@@ -524,7 +617,10 @@ class MainWindow:
         if text == "":
             return
 
-        value = int(text)
+        try:
+            value = int(text)
+        except ValueError:
+            return
         if slider_var.get() != value:
             slider_var.set(value)
 
@@ -536,7 +632,10 @@ class MainWindow:
         entry_var = self.cpu_input_var if target == "cpu" else self.gpu_input_var
         slider_var = self.cpu_var if target == "cpu" else self.gpu_var
         text = entry_var.get().strip()
-        normalized = str(slider_var.get()) if text == "" else str(min(max(int(text), 0), 100))
+        try:
+            normalized = str(slider_var.get()) if text == "" else str(min(max(int(text), 0), 100))
+        except ValueError:
+            normalized = str(slider_var.get())
         self._set_percent_entry_value(entry_var, normalized)
         return "break"
 
@@ -557,8 +656,8 @@ class MainWindow:
         showing = not self.show_password_var.get()
         self.show_password_var.set(showing)
         self.password_entry.configure(show="" if showing else "*")
-        self.toggle_pass_button.configure(text="Ocultar" if showing else "Mostrar")
-        self._set_status("Cambio de visibilidad de password")
+        self.toggle_pass_button.configure(text=self.tr.t("btn_hide") if showing else self.tr.t("btn_show"))
+        self._set_status(self.tr.t("st_pass_visibility"))
 
     def _on_backend_changed(self) -> None:
         self._save_config()
@@ -568,7 +667,7 @@ class MainWindow:
         self.telemetry = TemperatureService(self._nbfc_path, self._omenmon_path)
         self._enforce_permission_constraints()
         self._refresh_auto_mode_ui()
-        self._set_status(self._backend_status_message("Backend cambiado"))
+        self._set_status(self._backend_status_message(self.tr.t("prefix_changed")))
         if self.auto_fan_var.get():
             self._telemetry_async()
 
@@ -587,14 +686,14 @@ class MainWindow:
         self._cancel_live_apply()
         self._refresh_auto_mode_ui()
         if self._auto_mode_enabled:
-            self._set_status("Modo auto termico activo. La app ajustara ventiladores segun la temperatura.")
+            self._set_status(self.tr.t("st_auto_on"))
             self._save_config()
             self._telemetry_async()
             return
 
         self._set_display_fan_values(self._manual_cpu_percent, self._manual_gpu_percent)
         self._save_config()
-        self._set_status("Modo auto termico desactivado. Controles manuales restaurados.")
+        self._set_status(self.tr.t("st_auto_off"))
 
     def _on_live_apply_option_changed(self) -> None:
         self._save_config()
@@ -603,11 +702,11 @@ class MainWindow:
             self._set_status(self._permission_status_message())
             return
         if self.live_apply_var.get():
-            self._set_status("Aplicacion en vivo activada.")
+            self._set_status(self.tr.t("st_live_on"))
             self._schedule_live_apply()
             return
         self._cancel_live_apply()
-        self._set_status("Aplicacion en vivo desactivada.")
+        self._set_status(self.tr.t("st_live_off"))
 
     def _refresh_auto_mode_ui(self) -> None:
         blocked = self._controls_blocked_by_permissions()
@@ -651,7 +750,7 @@ class MainWindow:
     def _save_config(self) -> None:
         try:
             autoclose_secs = int(self.autoclose_seconds_var.get())
-        except (TypeError, ValueError):
+        except (tk.TclError, TypeError, ValueError):
             autoclose_secs = 60
             self.autoclose_seconds_var.set(autoclose_secs)
 
@@ -665,6 +764,7 @@ class MainWindow:
             autoclose_enabled=bool(self.autoclose_enabled_var.get()),
             autoclose_seconds=autoclose_secs,
             app_password=self.password_var.get(),
+            language=self.language_var.get(),
             fan_backend=self.backend_var.get(),
             nbfc_profile=self.nbfc_profile_var.get(),
             window_geometry=self.root.geometry(),
@@ -676,11 +776,11 @@ class MainWindow:
             return
 
         if self.auto_fan_var.get():
-            self._set_status("Modo auto termico activo. Desactivalo si quieres aplicar valores manuales.")
+            self._set_status(self.tr.t("st_auto_block"))
             return
 
         self.apply_button.configure(state="disabled")
-        self._set_status("Aplicando velocidades de ventilador...")
+        self._set_status(self.tr.t("st_applying"))
 
         cpu = int(self.cpu_var.get())
         gpu = int(self.gpu_var.get())
@@ -828,18 +928,20 @@ class MainWindow:
 
         targets = self._calculate_auto_targets(cpu_c, gpu_c)
         if targets is None:
-            status = "Modo auto termico activo. Esperando telemetria de temperatura."
+            status = self.tr.t("st_auto_waiting")
             return None, None, self._dedupe_auto_status(status)
 
         cpu_target, gpu_target = targets
-        status = (
-            "Modo auto termico: "
-            f"CPU {self._format_temp(cpu_c)} -> {cpu_target}% | "
-            f"GPU {self._format_temp(gpu_c)} -> {gpu_target}%"
+        status = self.tr.t(
+            "st_auto_status",
+            cpu_temp=self._format_temp(cpu_c),
+            cpu_target=str(cpu_target),
+            gpu_temp=self._format_temp(gpu_c),
+            gpu_target=str(gpu_target),
         )
 
         if not is_running_as_admin():
-            return cpu_target, gpu_target, self._dedupe_auto_status(status + " | requiere Administrador para aplicar")
+            return cpu_target, gpu_target, self._dedupe_auto_status(self.tr.t("st_auto_require_admin", status=status))
 
         desired = (cpu_target, gpu_target)
         cooldown_s = max(3.0, float(self.config_manager.config.telemetry_interval_seconds))
@@ -852,12 +954,12 @@ class MainWindow:
             if result.ok:
                 self._last_auto_targets = desired
                 self._last_auto_apply_at = time.monotonic()
-                return cpu_target, gpu_target, self._dedupe_auto_status(status + " | aplicado")
-            return cpu_target, gpu_target, self._dedupe_auto_status(f"Modo auto no pudo aplicar: {result.message}")
+                return cpu_target, gpu_target, self._dedupe_auto_status(self.tr.t("st_auto_applied", status=status))
+            return cpu_target, gpu_target, self._dedupe_auto_status(self.tr.t("st_auto_failed", message=result.message))
 
         if self._last_auto_targets is None:
-            return cpu_target, gpu_target, self._dedupe_auto_status(status + " | calculado")
-        return cpu_target, gpu_target, self._dedupe_auto_status(status + " | manteniendo curva")
+            return cpu_target, gpu_target, self._dedupe_auto_status(self.tr.t("st_auto_calculated", status=status))
+        return cpu_target, gpu_target, self._dedupe_auto_status(self.tr.t("st_auto_keep_curve", status=status))
 
     def _calculate_auto_targets(self, cpu_c: float | None, gpu_c: float | None) -> tuple[int, int] | None:
         available = [temp for temp in (cpu_c, gpu_c) if temp is not None]
@@ -902,14 +1004,14 @@ class MainWindow:
 
     def _render_status(self) -> None:
         if self.autoclose_enabled_var.get() and self._countdown_job is not None:
-            self.status_var.set(f"{self._base_status} | Autocierre en {self._countdown_remaining}s")
+            self.status_var.set(f"{self._base_status} | {self.tr.t('opt_autoclose')} en {self._countdown_remaining}s")
             return
         self.status_var.set(self._base_status)
 
     def _ensure_countdown_state(self) -> None:
         if self.autoclose_enabled_var.get():
             if self._countdown_job is None:
-                self._countdown_remaining = max(5, int(self.autoclose_seconds_var.get()))
+                self._countdown_remaining = self._safe_autoclose_seconds()
                 self._tick_countdown()
             else:
                 self._render_status()
@@ -925,7 +1027,7 @@ class MainWindow:
             return
 
         if self._countdown_remaining <= 0:
-            self._set_status("Autocierre ejecutado")
+            self._set_status(self.tr.t("st_autoclose_done"))
             self._on_exit()
             return
 
@@ -936,19 +1038,19 @@ class MainWindow:
     def _show_about(self) -> None:
         year = datetime.now().year
         top = tk.Toplevel(self.root)
-        top.title("About")
+        top.title(self.tr.t("about_title"))
         top.resizable(False, False)
         top.transient(self.root)
         top.configure(bg="#121a22")
 
         ttk.Label(
             top,
-            text=f"Amen Gaming Hub {APP_VERSION_TAG}\nApache License 2.0\nSynyster Rick, {year}",
+            text=self.tr.t("about_body", version=APP_VERSION_TAG, year=str(year)),
             padding=14,
             justify="left",
         ).pack(fill="x")
 
-        ttk.Button(top, text="Cerrar", command=top.destroy).pack(pady=(0, 12))
+        ttk.Button(top, text=self.tr.t("btn_close"), command=top.destroy).pack(pady=(0, 12))
 
     def _on_exit(self) -> None:
         self._cancel_live_apply()
