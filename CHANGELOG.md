@@ -1,5 +1,10 @@
 # Changelog
 
+## V0.0.25 - 2026-04-24
+
+- Se corrige un crash al cambiar idioma en algunos entornos Tkinter (`TclError: unknown option -label`) al reconstruir el menú traducido en lugar de relabel de cascadas.
+- Se mantiene la funcionalidad existente de i18n y donaciones sin cambios de comportamiento en control de ventiladores.
+
 ## V0.0.24 - 2026-04-24
 
 - Se agrega soporte multi idioma (es/en) en la UI con selector en menu `Idioma/Language` y persistencia en `config.json`.

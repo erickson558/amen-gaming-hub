@@ -23,7 +23,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 
 ## Estado del proyecto
 
-- Version actual: `V0.0.24`.
+- Version actual: `V0.0.25`.
 - Plataforma objetivo: Windows 10/11.
 - Lenguaje: Python 3.12 recomendado.
 - Licencia: Apache License 2.0.

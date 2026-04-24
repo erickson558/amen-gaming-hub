@@ -517,14 +517,10 @@ class MainWindow:
         self.donate_button.configure(text=self.tr.t("btn_donate"))
         self.exit_button.configure(text=self.tr.t("btn_exit"))
 
-        if self._menu is not None and self._menu_file is not None and self._menu_help is not None:
-            self._menu_file.entryconfigure(0, label=self.tr.t("menu_apply"))
-            self._menu_file.entryconfigure(2, label=self.tr.t("menu_exit"))
-            self._menu_help.entryconfigure(0, label=self.tr.t("menu_about"))
-            self._menu_help.entryconfigure(1, label=self.tr.t("menu_donate"))
-            self._menu.entryconfigure(0, label=self.tr.t("menu_file"))
-            self._menu.entryconfigure(1, label=self.tr.t("menu_help"))
-            self._menu.entryconfigure(2, label=self.tr.t("menu_language"))
+        if self._menu is not None:
+            # Some Tk builds reject relabeling top-level cascades via entryconfigure,
+            # so rebuild the menu with translated labels to keep behavior stable.
+            self._build_menu()
 
     def _set_language(self, lang_code: str) -> None:
         self.tr.language = lang_code
