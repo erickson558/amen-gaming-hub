@@ -1,5 +1,26 @@
 # Changelog
 
+## V0.0.26 - 2026-07-23
+
+- Se endurece el manejo de errores de subprocess en `NBFCFanController._run` y
+  `CommandTemplateFanController.apply_fan_speeds`, capturando `TimeoutExpired`/`OSError`/
+  `ValueError` igual que ya hacia `OmenMonFanController._run`, en vez de dejar escapar la
+  excepcion desde el backend.
+- Se destrackea `config.json` de git (`git rm --cached` + `.gitignore`): es estado local
+  por maquina y la app ya lo regenera si falta, tal como documentan `README.md` y
+  `CONTRIBUTING.md`.
+- Se adopta Spec-Driven Development: nuevo directorio `specs/` con el proceso documentado
+  y un spec retroactivo de este cambio.
+- Se agregan Agents (`.claude/agents/`) y Skills (`.claude/skills/`) de Claude Code para
+  repetir el flujo de analisis/correccion/versionado/publicacion sin perder contexto entre
+  sesiones: `python-qa-release-engineer`, `code-doc-explainer`, `sdd-spec`,
+  `github-publish`, `code-commenter`, `debug-fix-release`.
+- Se comenta en espanol el codigo fuente completo (`app.py` y todo `amen_hub/`) explicando
+  el proposito de cada modulo/clase/funcion y la logica no obvia, sin cambiar
+  comportamiento.
+- Sin cambios de comportamiento para el usuario final: multi-idioma y el boton de
+  donacion siguen igual que en `V0.0.24`/`V0.0.25`.
+
 ## V0.0.25 - 2026-04-24
 
 - Se corrige un crash al cambiar idioma en algunos entornos Tkinter (`TclError: unknown option -label`) al reconstruir el menú traducido en lugar de relabel de cascadas.

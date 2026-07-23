@@ -1,3 +1,5 @@
+# Logging a archivo (log.txt) para poder diagnosticar la app ya empaquetada,
+# donde no hay consola visible (--noconsole en build.ps1).
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -8,8 +10,17 @@ LOG_FILE = resolve_in_base("log.txt")
 
 
 def setup_logger() -> logging.Logger:
+    """Logger singleton "amen_hub" que escribe en log.txt junto al .exe.
+
+    Se rota automaticamente (max 2 MB, 3 backups) para que el log no crezca
+    sin limite. El nombre del thread se incluye en el formato porque el
+    trabajo real (aplicar ventiladores, telemetria) corre en workers, no en
+    el hilo principal de Tkinter.
+    """
     logger = logging.getLogger("amen_hub")
     if logger.handlers:
+        # Ya se configuro antes (p.ej. si algo vuelve a llamar setup_logger);
+        # evita duplicar handlers y por lo tanto duplicar cada linea de log.
         return logger
 
     ensure_parent(LOG_FILE)

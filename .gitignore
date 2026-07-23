@@ -15,3 +15,4 @@ log.txt
 .tcl_runtime_cache/
 tools/nbfc/
 tools/omenmon/
+config.json

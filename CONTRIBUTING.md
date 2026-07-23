@@ -23,6 +23,13 @@ python bump_version.py
 .\build.ps1
 ```
 
+## Spec-Driven Development
+
+Antes de una feature nueva o un cambio de comportamiento visible, crea o actualiza un
+spec en `specs/` (ver `specs/README.md` y `specs/TEMPLATE.md`). Fixes triviales no lo
+requieren. El skill de Claude Code `sdd-spec` (`.claude/skills/sdd-spec/SKILL.md`)
+automatiza este paso.
+
 ## Reglas del repositorio
 
 - Cada commit funcional debe crear una nueva version `Vx.x.x`.

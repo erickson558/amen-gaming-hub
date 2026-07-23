@@ -19,22 +19,29 @@ from amen_hub.subprocess_utils import run_hidden
 
 @dataclass
 class FanApplyResult:
+    """Resultado uniforme de cualquier operacion de un FanController."""
+
     ok: bool
     message: str
 
 
 @dataclass
 class ServiceInfo:
+    """Estado del servicio Windows NbfcService, segun `sc queryex`."""
+
     state_code: int | None
     pid: int | None
     raw_output: str
 
     @property
     def is_running(self) -> bool:
+        # 4 = SERVICE_RUNNING en el modelo de estados de Windows Service Control Manager.
         return self.state_code == 4
 
 
 class FanController:
+    """Interfaz comun para todos los backends de control de ventiladores."""
+
     backend_name = "base"
 
     def apply_fan_speeds(self, cpu_percent: int, gpu_percent: int) -> FanApplyResult:
@@ -51,6 +58,11 @@ class FanController:
 
 
 class UnavailableFanController(FanController):
+    """Backend "nulo": se usa cuando el backend pedido no se pudo inicializar
+    (ejecutable no encontrado, etc.). Cualquier operacion falla con un mensaje
+    explicando por que, en vez de lanzar una excepcion o fallar en silencio.
+    """
+
     def __init__(self, backend_name: str, message: str) -> None:
         self.backend_name = f"{backend_name} (no disponible)"
         self._message = message
@@ -63,6 +75,10 @@ class UnavailableFanController(FanController):
 
 
 class MockHPVictusFanController(FanController):
+    """Backend de simulacion: no toca hardware real. Sirve para probar la UI,
+    el threading y la persistencia de configuracion sin una laptop HP a mano.
+    """
+
     backend_name = "mock"
 
     def __init__(self) -> None:
@@ -89,6 +105,10 @@ class MockHPVictusFanController(FanController):
 
 
 class OmenMonFanController(FanController):
+    """Backend para HP Victus/OMEN usando la herramienta externa OmenMon,
+    que habla directo con el EC (Embedded Controller) via WMI/BIOS calls.
+    """
+
     backend_name = "omenmon"
 
     def __init__(self, executable: str = "OmenMon.exe") -> None:
@@ -104,6 +124,12 @@ class OmenMonFanController(FanController):
         return self.executable_path.with_name("OmenMon.xml")
 
     def _run(self, args: list[str], timeout: int = 20) -> tuple[bool, str]:
+        """Ejecuta OmenMon.exe y devuelve (exito, salida combinada stdout+stderr).
+
+        Nunca deja escapar una excepcion: un timeout o un error de SO se
+        traduce en (False, mensaje) para que el llamador pueda mostrarlo tal
+        cual en la UI en vez de crashear el worker thread.
+        """
         try:
             proc = run_hidden(
                 [self.executable, *args],
@@ -122,11 +148,20 @@ class OmenMonFanController(FanController):
         error = (proc.stderr or "").strip()
         combined = "\n".join(part for part in (output, error) if part).strip()
         lowered = combined.lower()
+        # OmenMon puede devolver returncode 0 incluso cuando en realidad fallo
+        # (imprime la excepcion a stdout), asi que ademas del codigo de salida
+        # se revisa el texto por palabras clave de error conocidas.
         error_tokens = ("exception:", "error", "failed", "access denied", "acceso denegado")
         ok = proc.returncode == 0 and not any(token in lowered for token in error_tokens)
         return ok, combined
 
     def _ensure_local_config(self) -> None:
+        """Ajusta OmenMon.xml (si existe) para permitir control manual real de
+        ventiladores en Victus/OMEN: desactiva el reporte de errores de BIOS
+        y fuerza el modo de nivel manual via EC. Se edita con regex en vez de
+        un parser XML completo para preservar formato/comentarios del archivo
+        tal como lo genero OmenMon.
+        """
         if not self.config_path.exists():
             return
 
@@ -153,6 +188,10 @@ class OmenMonFanController(FanController):
             self.config_path.write_text(text, encoding="utf-8")
 
     def _fan_level_bounds(self) -> tuple[int, int]:
+        """Rango de niveles de ventilador (unidades EC, no porcentaje) que
+        OmenMon.xml define para este equipo; si no esta definido, usa un
+        rango conservador (20-55) razonable para Victus/OMEN.
+        """
         default_min = 20
         default_max = 55
         if not self.config_path.exists():
@@ -169,6 +208,10 @@ class OmenMonFanController(FanController):
         return min_level, max_level
 
     def _percent_to_level(self, percent: int) -> int:
+        """Convierte un porcentaje 0-100 de la UI al nivel EC real que
+        OmenMon necesita, interpolando linealmente dentro de _fan_level_bounds().
+        0% siempre es nivel 0 (apagado/automatico), nunca el minimo de la curva.
+        """
         value = int(min(max(percent, 0), 100))
         if value <= 0:
             return 0
@@ -193,6 +236,8 @@ class OmenMonFanController(FanController):
         with self._lock:
             self._ensure_local_config()
 
+            # 0% en ambos = volver al modo termico por defecto del equipo,
+            # no "forzar nivel 0" (que dejaria los ventiladores apagados).
             if cpu == 0 and gpu == 0:
                 ok, out = self._run(["-Bios", "FanMode=LegacyDefault"])
                 if not ok:
@@ -205,6 +250,9 @@ class OmenMonFanController(FanController):
             cpu_level = self._percent_to_level(cpu)
             gpu_level = self._percent_to_level(gpu)
 
+            # Se intenta primero con dos canales (CPU y GPU independientes);
+            # algunos equipos solo aceptan un unico valor de FanLevel, asi que
+            # si falla se reintenta con el mayor de los dos como canal unico.
             ok, out = self._run(["-Bios", f"FanLevel={cpu_level},{gpu_level}"])
             if not ok:
                 fallback_level = max(cpu_level, gpu_level)
@@ -243,6 +291,12 @@ class OmenMonFanController(FanController):
 
 
 class NBFCFanController(FanController):
+    """Backend para NoteBook FanControl (NBFC): habla con nbfc.exe, que a su
+    vez depende del servicio Windows NbfcService. Buena parte de esta clase
+    existe para detectar y recuperar el servicio cuando queda en un estado
+    raro (parado, colgado, con la CLI sin responder), algo comun en NBFC.
+    """
+
     backend_name = "nbfc"
 
     def __init__(
@@ -257,19 +311,31 @@ class NBFCFanController(FanController):
         self._lock = Lock()
 
     def _run(self, args: list[str], timeout: int = 10) -> tuple[bool, str]:
+        """Ejecuta nbfc.exe. Misma logica defensiva que OmenMonFanController._run:
+        nunca deja escapar TimeoutExpired/OSError, los traduce a (False, mensaje).
+        """
         cmd = [self.executable] + args
-        proc = run_hidden(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        try:
+            proc = run_hidden(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"NBFC excedio el timeout de {timeout}s"
+        except OSError as ex:
+            return False, str(ex)
+
         output = (proc.stdout or "").strip()
         error = (proc.stderr or "").strip()
         combined = "\n".join([line for line in (output, error) if line]).strip()
         lowered = combined.lower()
 
+        # Igual que con OmenMon: nbfc.exe puede devolver returncode 0 y aun
+        # asi haber fallado (mensaje de error en el texto), por eso se revisan
+        # ademas palabras clave conocidas de fallo del servicio/CLI.
         has_error_text = any(
             token in lowered
             for token in (
@@ -285,6 +351,8 @@ class NBFCFanController(FanController):
         return ok, combined
 
     def _run_system(self, cmd: list[str], timeout: int = 12) -> tuple[int, str]:
+        """Ejecuta comandos de sistema (sc, tasklist) usados para inspeccionar
+        y controlar el servicio NbfcService, no la CLI de NBFC en si."""
         try:
             proc = run_hidden(
                 cmd,
@@ -299,6 +367,12 @@ class NBFCFanController(FanController):
             return 1, "system command failed"
 
     def _query_service_info(self) -> ServiceInfo:
+        """Consulta el estado actual de NbfcService via `sc queryex`.
+
+        El regex de estado acepta tanto "STATE" (Windows en ingles) como
+        "ESTADO" (Windows en espanol), ya que el texto de `sc` cambia segun
+        el idioma del sistema operativo.
+        """
         code, out = self._run_system(["sc", "queryex", "NbfcService"], timeout=8)
         if code != 0:
             return ServiceInfo(None, None, out)
@@ -311,6 +385,8 @@ class NBFCFanController(FanController):
         return ServiceInfo(state_code, pid, out)
 
     def _list_service_process_pids(self) -> list[int]:
+        """PIDs de todos los procesos NbfcService.exe corriendo (deberia haber
+        como mucho uno; mas de uno indica un servicio en estado inconsistente)."""
         try:
             proc = run_hidden(
                 ["tasklist", "/FI", "IMAGENAME eq NbfcService.exe", "/FO", "CSV", "/NH"],
@@ -342,6 +418,9 @@ class NBFCFanController(FanController):
         return self._query_service_info().is_running
 
     def _wait_for_service_state(self, expected_states: set[int], timeout_s: float = 8.0) -> ServiceInfo | None:
+        """Sondea el estado del servicio hasta que entre en *expected_states*
+        o se agote el timeout. Se usa para esperar transiciones (parando,
+        arrancando) en vez de asumir que un comando `sc` es instantaneo."""
         end = time.time() + timeout_s
         while time.time() < end:
             info = self._query_service_info()
@@ -354,6 +433,9 @@ class NBFCFanController(FanController):
         return self._wait_for_service_state({4}, timeout_s=timeout_s) is not None
 
     def _is_cli_available(self) -> bool:
+        # El servicio puede reportarse RUNNING y aun asi tener el pipe de
+        # comunicacion con nbfc.exe roto; por eso se hace una llamada real de
+        # bajo costo (status --fan 0) en vez de confiar solo en `sc`.
         try:
             proc = run_hidden(
                 [self.executable, "status", "--fan", "0"],
@@ -391,6 +473,12 @@ class NBFCFanController(FanController):
         return ok
 
     def _ensure_service_ready(self) -> bool:
+        """Deja NbfcService listo para recibir comandos antes de aplicar/leer,
+        escalando gradualmente: si ya esta OK no hace nada; si esta en una
+        transicion (arrancando/parando, codigos 2/3) espera a que se asiente;
+        si esta parado (1) intenta arrancarlo; y si nada de eso funciona,
+        recurre al reinicio forzado de _hard_reset_service().
+        """
         info = self._query_service_info()
 
         if info.is_running and self._wait_for_cli_available(timeout_s=5.0):
@@ -412,6 +500,9 @@ class NBFCFanController(FanController):
         return self._hard_reset_service()
 
     def _candidate_profiles(self) -> list[str]:
+        """Perfiles NBFC candidatos para auto-descubrimiento: se prioriza
+        cualquier perfil HP que mencione Omen/Victus; si no hay ninguno, se
+        usa cualquier perfil que empiece con "HP " como segunda opcion."""
         ok, out = self._run(["config", "--list"], timeout=12)
         if not ok or not out:
             return []
@@ -423,6 +514,9 @@ class NBFCFanController(FanController):
         return hp_like
 
     def _try_profile(self, profile: str, requested: int) -> tuple[bool, str]:
+        """Prueba *profile* aplicando la velocidad pedida y verificando que
+        NBFC realmente tome control (no quede en auto y el target sea > 0).
+        Si funciona, deja ese perfil activo en self.profile."""
         ok, out = self._run(["config", "--set", profile])
         if not ok:
             return False, out
@@ -436,6 +530,9 @@ class NBFCFanController(FanController):
         return True, "ok"
 
     def _autodiscover_profile(self, requested: int) -> bool:
+        """Prueba cada perfil candidato hasta encontrar uno que este equipo
+        realmente acepte, para no depender de que el usuario conozca el
+        nombre exacto del perfil NBFC de su modelo."""
         if not self.autodiscover_profile:
             return False
         for profile in self._candidate_profiles():
@@ -445,6 +542,8 @@ class NBFCFanController(FanController):
         return False
 
     def _read_status(self) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        """Lee (auto_control_habilitado, velocidad_actual, velocidad_objetivo)
+        parseando la salida de texto de `nbfc status --fan 0`."""
         ok, out = self._run(["status", "--fan", "0"])
         if not ok or not out:
             return None, None, None
@@ -482,6 +581,9 @@ class NBFCFanController(FanController):
 
         cpu = int(min(max(cpu_percent, 0), 100))
         gpu = int(min(max(gpu_percent, 0), 100))
+        # NBFC controla un unico ventilador logico (indice 0): se usa el mayor
+        # de CPU/GPU pedido para no quedar por debajo de lo que el usuario
+        # necesita en cualquiera de los dos componentes.
         requested = max(cpu, gpu)
 
         with self._lock:
@@ -493,6 +595,8 @@ class NBFCFanController(FanController):
 
             ok, out = self._run(["config", "--set", self.profile])
             if (not ok) and ("service is unavailable" in out.lower()):
+                # El servicio se cayo entre _ensure_service_ready() y este
+                # comando: se intenta una reparacion completa antes de rendirse.
                 repaired, _repair_report = self._repair_nbfc_service_locked()
                 if repaired:
                     ok, out = self._run(["config", "--set", self.profile])
@@ -505,6 +609,9 @@ class NBFCFanController(FanController):
             ok, out = self._run(["set", "--fan", "0", "--speed", str(requested)], timeout=7)
             if not ok:
                 if "232" in out:
+                    # Error de Windows 232 = "el pipe se esta cerrando": sintoma
+                    # tipico de NbfcService en mal estado, mensaje mas claro que
+                    # el codigo crudo.
                     return FanApplyResult(
                         False,
                         "NBFC reporta canalizacion rota (232). Ejecuta la app como Administrador y valida perfil NBFC.",
@@ -518,6 +625,9 @@ class NBFCFanController(FanController):
                     "NBFC no devolvio estado de ventilador. Cambia perfil NBFC o ejecuta como Administrador.",
                 )
 
+            # Si el perfil configurado no aplica realmente a este equipo, NBFC
+            # se queda en auto-control o con target 0: se intenta descubrir un
+            # perfil que si funcione antes de reportar el fallo al usuario.
             if auto_enabled == 1.0 or target <= 0:
                 if self._autodiscover_profile(requested):
                     auto_enabled, current, target = self._read_status()
@@ -558,6 +668,8 @@ class NBFCFanController(FanController):
             return FanApplyResult(True, "NBFC restablecio el auto-control del ventilador")
 
     def diagnosticar_nbfc(self) -> str:
+        """Genera un reporte de texto legible (para el boton "Diagnostico NBFC"
+        de la UI) con el estado del servicio, la CLI y los perfiles disponibles."""
         service_info = self._query_service_info()
         process_pids = self._list_service_process_pids()
         lines = [
@@ -599,6 +711,12 @@ class NBFCFanController(FanController):
         return "\n".join(lines)
 
     def _repair_nbfc_service_locked(self) -> tuple[bool, str]:
+        """Reinicio "duro" de NbfcService: para el servicio (matando el
+        proceso a la fuerza si no responde a `sc stop`), espera, lo vuelve a
+        arrancar y confirma que la CLI responde. Devuelve un reporte paso a
+        paso para mostrarlo en el boton "Reparar NBFC" de la UI.
+        Requiere llamarse con self._lock ya tomado por el metodo publico.
+        """
         if not is_running_as_admin():
             return False, "La reparacion NBFC requiere ejecutar la app como Administrador."
 
@@ -613,6 +731,9 @@ class NBFCFanController(FanController):
             self._run_system(["sc", "stop", "NbfcService"], timeout=10)
             stopped = self._wait_for_service_state({1}, timeout_s=10.0)
             if stopped is None:
+                # `sc stop` no fue suficiente (servicio colgado): se fuerza el
+                # cierre del proceso, primero por PID conocido y despues por
+                # nombre de imagen como red de seguridad.
                 current = self._query_service_info()
                 if current.pid:
                     self._run_system(["taskkill", "/PID", str(current.pid), "/T", "/F"], timeout=8)
@@ -666,6 +787,12 @@ class NBFCFanController(FanController):
 
 
 class CommandTemplateFanController(FanController):
+    """Backend generico: ejecuta comandos externos definidos por el usuario en
+    config.json (fan_command_cpu/fan_command_gpu), con "{value}" reemplazado
+    por el porcentaje 0-100. Util para equipos sin OmenMon ni NBFC pero con
+    alguna otra herramienta de linea de comandos para controlar ventiladores.
+    """
+
     backend_name = "command"
 
     def __init__(self, cpu_template: str, gpu_template: str) -> None:
@@ -679,18 +806,26 @@ class CommandTemplateFanController(FanController):
 
         cpu = int(min(max(cpu_percent, 0), 100))
         gpu = int(min(max(gpu_percent, 0), 100))
-        cpu_cmd = shlex.split(self._cpu_template.format(value=cpu))
-        gpu_cmd = shlex.split(self._gpu_template.format(value=gpu))
+
+        # shlex.split raises ValueError on malformed shell syntax
+        try:
+            cpu_cmd = shlex.split(self._cpu_template.format(value=cpu))
+            gpu_cmd = shlex.split(self._gpu_template.format(value=gpu))
+        except ValueError as ex:
+            return FanApplyResult(False, f"Plantilla de comando invalida: {ex}")
 
         with self._lock:
             for cmd in (cpu_cmd, gpu_cmd):
-                proc = run_hidden(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    check=False,
-                )
+                try:
+                    proc = run_hidden(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                except (OSError, subprocess.SubprocessError) as ex:
+                    return FanApplyResult(False, f"Error ejecutando comando: {ex}")
                 if proc.returncode != 0:
                     stderr = proc.stderr.strip() or proc.stdout.strip() or "sin detalle"
                     return FanApplyResult(False, f"Comando fallo: {stderr}")
@@ -702,6 +837,12 @@ class CommandTemplateFanController(FanController):
 
 
 def build_fan_controller(config: AppConfig) -> FanController:
+    """Fabrica el FanController activo segun config.fan_backend.
+
+    Con "auto", prioriza OmenMon (mejor soporte HP Victus/OMEN), luego NBFC,
+    luego un comando custom si esta configurado; si nada esta disponible,
+    devuelve un UnavailableFanController con un mensaje explicando que falta.
+    """
     omenmon_path = find_omenmon_executable(config.omenmon_executable)
     nbfc_path = find_nbfc_executable(config.nbfc_executable)
 
@@ -751,6 +892,8 @@ def build_fan_controller(config: AppConfig) -> FanController:
 
 
 def find_omenmon_executable(config_value: str = "auto") -> str | None:
+    """Localiza OmenMon.exe: ruta configurada explicitamente, carpeta local
+    del proyecto/`.exe`, tools/omenmon/, o finalmente el PATH del sistema."""
     if config_value and config_value.strip().lower() != "auto":
         custom = Path(config_value.strip())
         if custom.exists():
@@ -773,6 +916,9 @@ def find_omenmon_executable(config_value: str = "auto") -> str | None:
 
 
 def find_nbfc_executable(config_value: str = "auto") -> str | None:
+    """Localiza nbfc.exe: ruta configurada explicitamente, el binario del
+    propio servicio NbfcService instalado, rutas locales conocidas, PATH, o
+    finalmente las rutas de instalacion por defecto de NBFC en Program Files."""
     if config_value and config_value.strip().lower() != "auto":
         custom = Path(config_value.strip())
         if custom.exists():
@@ -809,6 +955,9 @@ def find_nbfc_executable(config_value: str = "auto") -> str | None:
 
 
 def _find_nbfc_cli_from_service() -> str | None:
+    """Deriva la ruta de nbfc.exe a partir de donde esta instalado el
+    servicio NbfcService (`sc qc`), asumiendo que el CLI vive junto al
+    binario del servicio. Mas confiable que asumir una ruta fija."""
     try:
         proc = run_hidden(
             ["sc", "qc", "NbfcService"],
@@ -837,6 +986,12 @@ def _find_nbfc_cli_from_service() -> str | None:
 
 
 def is_running_as_admin() -> bool:
+    """True si el proceso actual corre elevado (Administrador de Windows).
+
+    Todos los backends reales (OmenMon, NBFC) lo requieren para poder escribir
+    en el EC/hardware; la UI usa esto para bloquear controles preventivamente
+    en vez de dejar que el usuario intente y reciba un error de permisos.
+    """
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:  # noqa: BLE001

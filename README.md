@@ -23,7 +23,7 @@ Aplicacion de escritorio en Python para monitorear temperatura y aplicar perfile
 
 ## Estado del proyecto
 
-- Version actual: `V0.0.25`.
+- Version actual: `V0.0.26`.
 - Plataforma objetivo: Windows 10/11.
 - Lenguaje: Python 3.12 recomendado.
 - Licencia: Apache License 2.0.
@@ -207,6 +207,22 @@ Regla operativa del proyecto:
 
 - cada commit funcional genera una nueva version patch.
 - la version del codigo, la version mostrada en la app y el tag de GitHub deben coincidir.
+
+## Desarrollo asistido con Claude Code
+
+Este repo usa Spec-Driven Development y trae Agents/Skills de Claude Code listos para
+repetir el flujo de trabajo sin perder contexto entre sesiones:
+
+- `specs/`: proceso de Spec-Driven Development (ver `specs/README.md`). Toda feature
+  nueva o cambio de comportamiento visible arranca con un spec en este directorio.
+- `.claude/agents/python-qa-release-engineer.md`: agente "ingeniero senior Python + QA +
+  DevOps" para corregir errores, versionar, recompilar y publicar en GitHub.
+- `.claude/agents/code-doc-explainer.md`: agente para explicar/comentar codigo existente
+  sin tocar versionado ni hacer commits.
+- `.claude/skills/`: `sdd-spec` (crea specs), `github-publish` (commit/tag/push a
+  `erickson558/amen-gaming-hub`), `code-commenter` (comentarios en espanol sin cambiar
+  comportamiento) y `debug-fix-release` (las 6 fases: analisis, correccion, validacion,
+  versionado, commit, push).
 
 ## Release en GitHub
 

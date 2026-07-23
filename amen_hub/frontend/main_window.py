@@ -22,6 +22,19 @@ from amen_hub.version import APP_VERSION_TAG
 
 
 class MainWindow:
+    """Ventana principal de la app: arma toda la UI de Tkinter y coordina el
+    controller de ventiladores, la telemetria y la persistencia de config.
+
+    Patron de concurrencia usado en toda la clase: el trabajo que puede
+    tardar (aplicar velocidades, leer temperatura, diagnosticar/reparar NBFC)
+    corre en threads separados (`threading.Thread(..., daemon=True)`) que
+    solo escriben resultados a `self.ui_queue`; `_drain_queue()` corre en el
+    hilo principal via `root.after` y es la unica que toca widgets de Tkinter.
+    Asi la GUI nunca se congela esperando a un backend externo.
+    """
+
+    # Curva termica del "Modo auto termico": pares (temperatura_C, porcentaje
+    # de ventilador). _curve_to_percent() interpola linealmente entre puntos.
     AUTO_FAN_CURVE = (
         (35.0, 20),
         (45.0, 25),
@@ -44,16 +57,28 @@ class MainWindow:
         self.ui_queue: queue.Queue[Any] = queue.Queue()
         self.tr = Translator(self.config_manager.config.language)
 
+        # IDs de trabajos programados con root.after(), para poder cancelarlos
+        # (after_cancel) cuando el usuario cambia una opcion o cierra la app.
         self._countdown_remaining = 0
         self._countdown_job: str | None = None
         self._telemetry_job: str | None = None
         self._live_apply_job: str | None = None
+        # Flags "in-flight": evitan lanzar un segundo worker mientras el
+        # anterior todavia no termino (p.ej. telemetria lenta por un backend
+        # externo colgado).
         self._telemetry_inflight = False
         self._live_apply_inflight = False
+        # Flags de "no reaccionar a este cambio de variable": se usan al
+        # actualizar sliders/spinbox por codigo (no por el usuario) para no
+        # disparar sus propios callbacks de sincronizacion en cascada.
         self._suspend_live_change = False
         self._suspend_percent_entry_sync = False
+        # Ultimos porcentajes manuales elegidos por el usuario, preservados
+        # mientras el modo auto termico esta activo para poder restaurarlos.
         self._manual_cpu_percent = int(self.config_manager.config.cpu_fan_percent)
         self._manual_gpu_percent = int(self.config_manager.config.gpu_fan_percent)
+        # Debounce de "aplicar en vivo": el objetivo pendiente y el ultimo
+        # que se aplico con exito, para no reenviar el mismo valor dos veces.
         self._pending_live_apply_targets: tuple[int, int] | None = None
         self._last_live_apply_targets: tuple[int, int] | None = None
         self._auto_mode_enabled = bool(self.config_manager.config.fan_auto_mode)
@@ -61,6 +86,8 @@ class MainWindow:
         self._last_auto_apply_at = 0.0
         self._last_auto_status = ""
         self._base_status = self.tr.t("st_ready")
+        # Referencias a los menus (se reconstruyen al cambiar de idioma; ver
+        # _apply_translations / _build_menu).
         self._menu = None
         self._menu_file = None
         self._menu_help = None
@@ -80,13 +107,15 @@ class MainWindow:
 
         self.root.after(100, self._drain_queue)
         self.root.after(250, self._ensure_countdown_state)
-        self._telemetry_async()
+        self._telemetry_async()  # dispara la primera lectura de inmediato, no espera el primer intervalo
         self._set_status(self._backend_status_message())
 
         if self.autostart_var.get():
             self._apply_async()
 
     def _configure_theme(self) -> None:
+        # Tema oscuro custom sobre ttk (requiere el theme base "clam" para
+        # que los estilos de color se apliquen correctamente en Windows).
         self.root.configure(bg="#0a0f14")
         style = ttk.Style(self.root)
         style.theme_use("clam")
@@ -113,6 +142,8 @@ class MainWindow:
         style.map("Danger.TButton", background=[("active", "#ca3a49")])
 
     def _build_variables(self) -> None:
+        # Variables de Tkinter (IntVar/StringVar/BooleanVar) que respaldan
+        # cada control de la UI, inicializadas desde la config persistida.
         cfg = self.config_manager.config
         self.cpu_var = tk.IntVar(value=cfg.cpu_fan_percent)
         self.gpu_var = tk.IntVar(value=cfg.gpu_fan_percent)
@@ -149,6 +180,9 @@ class MainWindow:
 
         self._menu_language = tk.Menu(self._menu, tearoff=False)
         for lang_code, lang_name in SUPPORTED_LANGUAGES.items():
+            # code=lang_code fija el valor en el momento de crear el lambda;
+            # sin eso, todos los items del menu terminarian usando el ultimo
+            # lang_code del for (bug clasico de closures tardias en Python).
             self._menu_language.add_radiobutton(
                 label=lang_name,
                 value=lang_code,
@@ -162,6 +196,9 @@ class MainWindow:
         self.root.config(menu=self._menu)
 
     def _build_ui(self) -> None:
+        # Layout: tarjeta de temperaturas + tarjeta de ventiladores (fila
+        # superior), tarjeta de opciones, fila de botones de accion, barra de
+        # estado. Todo con ttk usando los estilos definidos en _configure_theme.
         container = ttk.Frame(self.root, padding=16, style="Root.TFrame")
         container.pack(fill="both", expand=True)
 
@@ -184,6 +221,9 @@ class MainWindow:
 
         self.speed_card = ttk.LabelFrame(top_row, text=self.tr.t("card_fans"), style="Card.TLabelframe")
         self.speed_card.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        # root.register() envuelve _validate_percent_entry para que Tcl pueda
+        # llamarla; "%P" le pasa el valor propuesto del campo (validate="key"
+        # la corre en cada tecla, antes de aceptar el caracter).
         percent_validate_cmd = (self.root.register(self._validate_percent_entry), "%P")
 
         self.fan_cpu_dial_label = ttk.Label(self.speed_card, text=self.tr.t("fan_cpu_dial"))
@@ -368,6 +408,9 @@ class MainWindow:
         status.pack(fill="x", side="bottom", pady=(6, 0), ipady=4)
 
     def _diagnose_nbfc(self) -> None:
+        # Deshabilita el boton para evitar diagnosticos superpuestos y corre
+        # el diagnostico (potencialmente lento: llama a nbfc.exe varias veces)
+        # en un thread aparte para no bloquear la GUI.
         self.diagnose_button.configure(state="disabled")
         self._set_status(self.tr.t("st_diagnosing"))
 
@@ -413,6 +456,11 @@ class MainWindow:
         threading.Thread(target=worker, daemon=True).start()
 
     def _drain_queue(self) -> None:
+        # Unico punto donde se procesan mensajes puestos por los worker
+        # threads (aplicar, telemetria, diagnostico, reparar, auto-modo).
+        # Corre en el hilo principal via root.after, asi que aqui SI es
+        # seguro tocar widgets de Tkinter. Los mensajes son strings simples
+        # (texto de estado) o tuplas ("__tipo__", *datos) para casos especiales.
         while not self.ui_queue.empty():
             msg = self.ui_queue.get_nowait()
             if msg == "__enable_apply__":
@@ -441,6 +489,9 @@ class MainWindow:
                 self._set_status(self.tr.t("st_diagnosis_done"))
                 continue
             self._set_status(str(msg))
+        # Se reprograma a si misma cada 120ms: un polling loop simple en vez
+        # de bindear cada worker directamente a la UI (los workers no tienen
+        # forma segura de tocar Tkinter desde otro thread).
         self.root.after(120, self._drain_queue)
 
     def _show_diagnose_popup(self, report: str) -> None:
@@ -545,6 +596,9 @@ class MainWindow:
             return 60
 
     def _controls_blocked_by_permissions(self) -> bool:
+        # True solo cuando el backend activo necesita Administrador (OmenMon,
+        # NBFC) y el proceso no esta elevado. El backend "mock" y "command"
+        # no reportan requires_admin_for_control(), asi que nunca se bloquean.
         return self.controller.requires_admin_for_control() and not is_running_as_admin()
 
     def _permission_status_message(self) -> str:
@@ -560,6 +614,10 @@ class MainWindow:
         return message
 
     def _enforce_permission_constraints(self) -> None:
+        # Se llama al arrancar y al cambiar de backend: si el backend activo
+        # requiere Administrador y no lo tenemos, apaga modo auto y aplicar
+        # en vivo para no dejar el sistema en un estado "a medias" (activado
+        # en la UI pero sin poder aplicarse de verdad).
         if not self._controls_blocked_by_permissions():
             return
 
@@ -580,6 +638,9 @@ class MainWindow:
         self._last_auto_status = ""
 
     def _on_live_change(self) -> None:
+        # Se dispara con cualquier cambio de slider/opcion relevante. Si el
+        # cambio vino del propio codigo (p.ej. _set_display_fan_values durante
+        # modo auto), _suspend_live_change evita guardar/reaplicar de mas.
         if self._suspend_live_change:
             self._update_value_labels()
             return
@@ -597,6 +658,9 @@ class MainWindow:
         self._sync_percent_entries_from_vars()
 
     def _validate_percent_entry(self, proposed: str) -> bool:
+        # Filtro de teclas del Spinbox: permite vacio (mientras se borra para
+        # reescribir) y solo digitos 0-100. Se completa/normaliza en
+        # _normalize_percent_entry al perder foco o presionar Enter.
         if proposed == "":
             return True
         if not proposed.isdigit():
@@ -604,6 +668,8 @@ class MainWindow:
         return int(proposed) <= 100
 
     def _on_percent_entry_change(self, target: str) -> None:
+        # Sincroniza Spinbox -> Scale. _suspend_percent_entry_sync evita loop
+        # infinito con _sync_percent_entries_from_vars (que hace Scale -> Spinbox).
         if self._suspend_percent_entry_sync:
             return
 
@@ -767,6 +833,8 @@ class MainWindow:
         )
 
     def _apply_async(self) -> None:
+        # Boton "Aplicar": lanza _worker_apply en un thread aparte para que
+        # la llamada al backend (que puede tardar segundos) no congele la UI.
         if self._controls_blocked_by_permissions():
             self._set_status(self._permission_status_message())
             return
@@ -790,6 +858,10 @@ class MainWindow:
         thread.start()
 
     def _worker_apply(self, cpu: int, gpu: int, live_apply: bool = False) -> None:
+        # Corre en un thread daemon (no en el hilo de Tkinter). Todo lo que
+        # produce va a self.ui_queue; nunca toca widgets directamente. Se
+        # comparte entre el boton "Aplicar" normal y el flujo de aplicar en
+        # vivo (live_apply=True cambia el formato del mensaje encolado).
         try:
             result = self.controller.apply_fan_speeds(cpu, gpu)
             now = datetime.now().strftime("%H:%M:%S")
@@ -820,6 +892,8 @@ class MainWindow:
         self._telemetry_job = self.root.after(interval * 1000, self._telemetry_async)
 
     def _telemetry_async(self) -> None:
+        # Si el ciclo anterior todavia no devolvio resultado (backend lento),
+        # no se lanza un segundo worker: solo se reprograma el siguiente tick.
         if self._telemetry_inflight:
             self._schedule_telemetry()
             return
@@ -829,6 +903,8 @@ class MainWindow:
         self._schedule_telemetry()
 
     def _worker_telemetry(self) -> None:
+        # Lee temperaturas y, si el modo auto termico esta activo, calcula (y
+        # potencialmente aplica) los targets correspondientes en la misma pasada.
         try:
             reading = self.telemetry.read()
             self.ui_queue.put(("__temps__", reading.cpu_c, reading.gpu_c))
@@ -874,6 +950,9 @@ class MainWindow:
             self._set_status(status_text)
 
     def _schedule_live_apply(self) -> None:
+        # Debounce: cada movimiento del slider reprograma el mismo job 180ms
+        # en el futuro en vez de aplicar de inmediato, para no saturar el
+        # hardware con una llamada por cada pixel que se arrastra el dial.
         if self._controls_blocked_by_permissions() or self.auto_fan_var.get() or not self.live_apply_var.get():
             return
 
@@ -889,6 +968,8 @@ class MainWindow:
         self._pending_live_apply_targets = None
 
     def _flush_live_apply(self) -> None:
+        # Vence el debounce: si nada cambio desde el ultimo apply exitoso, o
+        # ya hay un apply en curso, no hace nada (evita trabajo redundante).
         self._live_apply_job = None
         if self._controls_blocked_by_permissions() or self.auto_fan_var.get() or not self.live_apply_var.get() or self._live_apply_inflight:
             return
@@ -915,10 +996,18 @@ class MainWindow:
         if self.auto_fan_var.get() or not self.live_apply_var.get():
             return
 
+        # Si el usuario siguio moviendo el slider mientras el apply anterior
+        # estaba en curso, hay un target pendiente distinto del ultimo
+        # aplicado: se encadena otro ciclo de debounce en vez de perderlo.
         if self._pending_live_apply_targets is not None and self._pending_live_apply_targets != self._last_live_apply_targets:
             self._schedule_live_apply()
 
     def _evaluate_auto_mode(self, cpu_c: float | None, gpu_c: float | None) -> tuple[int | None, int | None, str | None] | None:
+        """Con el modo auto termico activo, calcula el target segun la curva y,
+        si corresponde, lo aplica. Devuelve (cpu%, gpu%, texto_de_estado) para
+        que el llamador (worker de telemetria) lo encole hacia la UI, o None
+        si el modo auto esta desactivado (nada que reportar).
+        """
         if not self._auto_mode_enabled:
             return None
 
@@ -937,9 +1026,14 @@ class MainWindow:
         )
 
         if not is_running_as_admin():
+            # Se sigue mostrando el target calculado (para que el usuario vea
+            # que la curva funciona), pero no se intenta aplicar sin permisos.
             return cpu_target, gpu_target, self._dedupe_auto_status(self.tr.t("st_auto_require_admin", status=status))
 
         desired = (cpu_target, gpu_target)
+        # Cooldown minimo entre aplicaciones reales, para no reaplicar en cada
+        # tick de telemetria si la temperatura oscila un poco alrededor de un
+        # umbral de la curva.
         cooldown_s = max(3.0, float(self.config_manager.config.telemetry_interval_seconds))
         should_apply = self._last_auto_targets != desired and (
             self._last_auto_targets is None or (time.monotonic() - self._last_auto_apply_at) >= cooldown_s
@@ -968,6 +1062,13 @@ class MainWindow:
         return cpu_target, gpu_target
 
     def _curve_to_percent(self, temp_c: float) -> int:
+        """Interpola linealmente *temp_c* sobre AUTO_FAN_CURVE.
+
+        Por debajo del primer punto usa el minimo de la curva; por encima
+        del ultimo, 100%. Entre dos puntos, interpola y redondea al 5% mas
+        cercano (evita micro-ajustes constantes por variaciones minimas de
+        temperatura), acotado siempre a 20-100%.
+        """
         curve = self.AUTO_FAN_CURVE
         if temp_c <= curve[0][0]:
             return curve[0][1]
@@ -989,6 +1090,8 @@ class MainWindow:
         return f"{temp_c:.1f} °C"
 
     def _dedupe_auto_status(self, status: str) -> str | None:
+        # Evita reescribir la barra de estado con el mismo texto en cada tick
+        # de telemetria cuando el modo auto no cambio nada (parpadeo visual).
         if status == self._last_auto_status:
             return None
         self._last_auto_status = status
@@ -1018,6 +1121,8 @@ class MainWindow:
             self._render_status()
 
     def _tick_countdown(self) -> None:
+        # Cuenta regresiva de "Autocerrar": se reprograma cada 1000ms hasta
+        # llegar a 0, momento en que cierra la app igual que el boton Salir.
         if not self.autoclose_enabled_var.get():
             self._countdown_job = None
             return
@@ -1049,6 +1154,8 @@ class MainWindow:
         ttk.Button(top, text=self.tr.t("btn_close"), command=top.destroy).pack(pady=(0, 12))
 
     def _on_exit(self) -> None:
+        # Cancela trabajos programados (live-apply, telemetria) antes de
+        # cerrar para no dejar callbacks pendientes sobre una ventana destruida.
         self._cancel_live_apply()
         if self._telemetry_job is not None:
             self.root.after_cancel(self._telemetry_job)
@@ -1072,6 +1179,7 @@ class MainWindow:
 
 
 def run_app() -> None:
+    """Punto de entrada de la UI: crea la ventana raiz de Tk y entra al mainloop."""
     root = tk.Tk()
     MainWindow(root)
     root.mainloop()

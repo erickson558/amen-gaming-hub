@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Configuracion persistente de la app (config.json, junto al .exe/al proyecto).
+# El archivo es estado LOCAL de cada maquina (geometria de ventana, backend
+# elegido, etc.) y no se versiona en git: si falta, ConfigManager lo recrea
+# con los valores por defecto de AppConfig.
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -10,6 +14,12 @@ from .paths import ensure_parent, resolve_in_base
 
 @dataclass
 class AppConfig:
+    """Snapshot tipado de todo lo que se guarda en config.json.
+
+    Cada campo tiene un valor por defecto seguro, asi que crear un
+    AppConfig() vacio siempre produce una configuracion valida para arrancar
+    la app por primera vez.
+    """
     cpu_fan_percent: int = 50
     gpu_fan_percent: int = 50
     fan_auto_mode: bool = False
@@ -32,6 +42,8 @@ class AppConfig:
 
 
 class ConfigManager:
+    """Carga, valida y persiste config.json; notifica a suscriptores en cada update()."""
+
     def __init__(self) -> None:
         self._path: Path = resolve_in_base("config.json")
         self._callbacks: List[Callable[[AppConfig], None]] = []
@@ -42,6 +54,7 @@ class ConfigManager:
         return self._path
 
     def _load(self) -> AppConfig:
+        # Primera ejecucion en esta maquina: no hay config.json todavia.
         if not self._path.exists():
             default_config = AppConfig()
             self._save(default_config)
@@ -53,11 +66,19 @@ class ConfigManager:
             data = self._sanitize(raw)
             return AppConfig(**data)
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            # config.json corrupto, con tipos invalidos o ilegible: no crashear
+            # la app, se reemplaza por una configuracion por defecto valida.
             fallback = AppConfig()
             self._save(fallback)
             return fallback
 
     def _sanitize(self, data: Dict) -> Dict:
+        """Limpia y acota los valores leidos del JSON antes de crear un AppConfig.
+
+        Ignora claves desconocidas (config.json de una version vieja/nueva),
+        fuerza tipos y rangos (0-100 para porcentajes, backend valido, etc.)
+        para que un archivo editado a mano o corrupto no rompa la app.
+        """
         safe = asdict(AppConfig())
         safe.update({k: v for k, v in data.items() if k in safe})
         safe["cpu_fan_percent"] = int(min(max(int(safe["cpu_fan_percent"]), 0), 100))
@@ -84,6 +105,8 @@ class ConfigManager:
         if safe["language"] not in {"es", "en"}:
             safe["language"] = "es"
 
+        # Normaliza variantes escritas a mano del nombre de perfil NBFC al
+        # nombre oficial que usa el backend NBFC para este equipo.
         profile_aliases = {
             "notebook pc 15": "HP OMEN Notebook PC 15",
             "omen notebook pc 15": "HP OMEN Notebook PC 15",
@@ -96,6 +119,7 @@ class ConfigManager:
         return safe
 
     def save(self) -> None:
+        """Reescribe config.json con el estado actual en memoria."""
         self._save(self.config)
 
     def _save(self, config: AppConfig) -> None:
@@ -104,6 +128,11 @@ class ConfigManager:
             json.dump(asdict(config), f, indent=2)
 
     def update(self, **kwargs) -> None:
+        """Aplica cambios parciales, los sanitiza, persiste y avisa a la UI.
+
+        La UI llama esto con los campos que cambiaron (ej. cpu_fan_percent=70);
+        el resto de la configuracion actual se conserva.
+        """
         merged = asdict(self.config)
         merged.update(kwargs)
         self.config = AppConfig(**self._sanitize(merged))
@@ -112,4 +141,5 @@ class ConfigManager:
             cb(self.config)
 
     def subscribe(self, callback: Callable[[AppConfig], None]) -> None:
+        """Registra *callback* para que se ejecute despues de cada update()."""
         self._callbacks.append(callback)

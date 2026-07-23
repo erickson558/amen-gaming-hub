@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Lectura de temperatura CPU/GPU. Nunca lanza excepciones hacia afuera: cada
+# metodo devuelve None cuando no logra leer un sensor, para que la UI muestre
+# "--.- C" en vez de romperse cuando falta hardware/permisos/driver.
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +18,9 @@ class TemperatureReading:
 
 
 class TemperatureService:
+    # Orden de preferencia de sensores EC de OmenMon para la temperatura de
+    # CPU. CPUT es el mas confiable en HP Victus/OMEN; BIOS queda de ultimo
+    # recurso porque en varios modelos devuelve 0 C (lectura invalida).
     OMENMON_CPU_SENSOR_PRIORITY = (
         "CPUT",
         "RTMP",
@@ -31,9 +37,11 @@ class TemperatureService:
         self.omenmon_executable = omenmon_executable
 
     def read(self) -> TemperatureReading:
+        """Lee CPU y GPU en una sola llamada (usado por el worker de telemetria)."""
         return TemperatureReading(cpu_c=self._read_cpu_temp(), gpu_c=self._read_gpu_temp())
 
     def _read_gpu_temp(self) -> Optional[float]:
+        # GPU: unica fuente es nvidia-smi (equipos sin GPU NVIDIA -> None).
         cmd = [
             "nvidia-smi",
             "--query-gpu=temperature.gpu",
@@ -55,10 +63,13 @@ class TemperatureService:
             return None
 
     def _read_cpu_temp(self) -> Optional[float]:
+        # 1) OmenMon (EC directo, mas preciso en HP Victus/OMEN).
         omenmon_temp = self._read_omenmon_temp()
         if omenmon_temp is not None:
             return omenmon_temp
 
+        # 2) Fallback generico via WMI/PowerShell (LibreHardwareMonitor,
+        # OpenHardwareMonitor, o el namespace ACPI estandar de Windows).
         for cmd in (
             [
                 "powershell",
@@ -94,6 +105,9 @@ class TemperatureService:
             return None
 
         executable = Path(self.omenmon_executable)
+        # Tres variantes de argumentos, de la mas completa a la mas basica:
+        # si OmenMon.exe no reconoce todos los sensores EC en este equipo,
+        # se reintenta con menos sensores hasta con solo -Bios Temp.
         for args in (
             ["-Ec", "CPUT", "RTMP", "TMP1", "TNT2", "TNT3", "TNT4", "TNT5", "-Bios", "Temp"],
             ["-Ec", "CPUT", "-Bios", "Temp"],
@@ -142,6 +156,14 @@ class TemperatureService:
             return None
 
     def _extract_temperature(self, text: str) -> Optional[float]:
+        """Fallback generico: busca numeros en *text* y se queda con el ultimo
+        valor que parezca una temperatura razonable en Celsius (0-130).
+
+        Usado para la salida de PowerShell/WMI, que no tiene un formato tan
+        estructurado como el de OmenMon. Los valores de WMI ACPI vienen en
+        decikelvin, por eso raw > 200 se convierte con la formula
+        Kelvin/10 - 273.15 antes de validar el rango.
+        """
         candidates: list[float] = []
         for token in re.findall(r"(?<![A-Za-z0-9])([0-9]+(?:\.[0-9]+)?)", text):
             raw = float(token)
@@ -157,6 +179,11 @@ class TemperatureService:
         return candidates[-1]
 
     def _extract_omenmon_sensor_map(self, text: str) -> dict[str, float]:
+        """Parsea la salida de OmenMon a un dict {etiqueta_sensor: valor_C}.
+
+        OmenMon imprime lineas del estilo "CPUT = 55 [C]" o "TNT2 = 98 [C]";
+        la regex captura el valor numerico y la unidad entre corchetes.
+        """
         sensors: dict[str, float] = {}
         for line in text.splitlines():
             match = re.search(r"=\s*(-?\d+(?:\.\d+)?)\s*\[([^\]]+)\]\s*$", line.strip())
@@ -166,6 +193,7 @@ class TemperatureService:
             value = float(match.group(1))
             label = match.group(2).strip().upper()
             if label in {"°C", "C"}:
+                # Algunas lineas usan la unidad como etiqueta (sensor BIOS Temp).
                 label = "BIOS"
 
             normalized = self._normalize_omenmon_temp(label, value)
@@ -176,6 +204,12 @@ class TemperatureService:
         return sensors
 
     def _select_omenmon_cpu_temp(self, sensors: dict[str, float]) -> Optional[float]:
+        """Elige la temperatura de CPU segun OMENMON_CPU_SENSOR_PRIORITY.
+
+        Si ninguno de los sensores priorizados esta presente, usa el maximo
+        de los sensores restantes (excluyendo GPTM, que es temperatura de GPU)
+        como mejor estimacion disponible.
+        """
         for label in self.OMENMON_CPU_SENSOR_PRIORITY:
             value = sensors.get(label)
             if value is not None:
@@ -187,10 +221,13 @@ class TemperatureService:
         return max(fallback)
 
     def _normalize_omenmon_temp(self, label: str, value: float) -> Optional[float]:
+        """Descarta lecturas de sensor que no son temperaturas reales."""
         if value <= 0 or value >= 130:
             return None
 
-        # Some HP Victus models report TNT2 permanently stuck at 98 C.
+        # En varios HP Victus, el sensor TNT2 se queda pegado en 98 C: no es
+        # una lectura real, asi que se descarta para no confundir al usuario
+        # ni a la curva de modo auto termico.
         if label == "TNT2" and value >= 98:
             return None
 
